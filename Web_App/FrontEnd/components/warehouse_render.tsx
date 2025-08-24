@@ -4,60 +4,74 @@
 // import { updateDqn, updatePpo } from "@/components/performance-chart";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { useEffect, useState } from "react";
+import { useWS } from "@/hooks/useWS";
+import { wsPaths } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+// const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL!
 
 interface WarehouseRenderProps {
     sessionId: string
     isTraining: boolean
     mode: string
+    envReady: boolean
+    // URL?: string|null|undefined
 }
 
+function validId(id: unknown): id is string{
+    return typeof id==="string" && id!=="undefined" && id!== "null" && id.length>0 && id!== undefined && id!== null
+}
 
-export function WarehouseRender({ sessionId, isTraining, mode}: WarehouseRenderProps) {
+export function WarehouseRender({ sessionId, isTraining, mode, envReady}: WarehouseRenderProps) {
     const [imageData, setImageData] = useState<string | null>(null)
 
-  // Poll image from backend every 2 seconds
-    // useEffect(() => {
-    // if (!isTraining || !sessionId) return
+    const handlePlotMsg = useCallback((event: MessageEvent)=>{
+        if(typeof event.data !== "string") return;
+        let data: any;
+        try { data=JSON.parse(event.data); } catch {return;}
 
-    // const fetchImage = async () => {
-    //     try {
-    //     // const data = await api.getMatplotlibPlot(sessionId, "warehouse_render")  // <- this should trigger return64web=True
-    //     const data = await api.getMatplotlibPlot(sessionId, "warehouse_render")
-    //     setImageData(data)
-    //     } catch (err) {
-    //     console.error("Failed to fetch warehouse render image:", err)
-    //     }
-    // }
-
-    // const interval = setInterval(fetchImage, 2000)
-    // return () => clearInterval(interval)
-    // }, [sessionId, isTraining])
-    useEffect(() => {
-        if (!isTraining || !sessionId ||sessionId==="null") return;
-
-        // const url=(mode==="2D")?`ws://localhost:8000/ws/plot/${sessionId}`:`ws://localhost:8000/ws/plot3d/${sessionId}`
-        // const socket = new WebSocket(url)
-        if (mode!=="2D") return;
-        const socket = new WebSocket(`ws://localhost:8000/ws/plot/${sessionId}`)
-
-        socket.onmessage = (event) => {
-            const data = JSON.parse(event.data)
-            // updateDqn(data)
-            // updatePpo(data)
-            if (data.image_base64) {
-            setImageData(data.image_base64)
+        if (data.type === "ping"){
+            plotSendRef.current?.({type:"pong", ts: Date.now()});
+            return;
         }
+        if (typeof data.image_base64 === "string"){
+            setImageData(data.image_base64);
         }
 
-        socket.onerror = (err) => {
-            console.error("WebSocket error:", err)
-            console.log("WebSocket readyState:", socket.readyState);
-        }
+    },[]);
 
-        return () => socket.close()
-    }, [sessionId, isTraining, mode])
+    const plotPath =
+        validId(sessionId) && isTraining && mode==="2D" && envReady
+            ? wsPaths.layout2d(sessionId)
+            : undefined;
+    // const plotPath =
+    //     mode === "2D"
+    //         ?(typeof URL === "string" && URL.length >0
+    //             ? URL
+    //             : (validId(sessionId) && isTraining && envReady ? wsPaths.plot2d(sessionId) : undefined))
+    //         : undefined;
 
+
+    const {status: plotStatus, send: sendPlot } = useWS({
+        path: plotPath,
+        onMessage: handlePlotMsg,
+        throttleMs: 250,
+    });
+
+    const plotSendRef = useRef<typeof sendPlot | null>(null);
+    useEffect(()=>{
+        plotSendRef.current = sendPlot;
+        return () => { plotSendRef.current = null; };
+    }, [sendPlot]);
+
+    useEffect(()=>{
+        if (!plotPath) setImageData(null);
+    }, [plotPath]);
+
+    const source = imageData?.startsWith("data:")
+        ? imageData
+        : `data:image/jpeg;base64,${imageData}`;
 
     return (
     // <Card className="p-4 mt-4">
@@ -72,8 +86,13 @@ export function WarehouseRender({ sessionId, isTraining, mode}: WarehouseRenderP
             size="sm"
             onClick={() => {
                 const link = document.createElement("a")
-                link.href = `data:image/png;base64,${imageData}`
-                link.download = "warehouse_render.png"
+                // link.href = `data:image/jpeg;base64,${imageData}`
+                // link.download = "warehouse_render.jpeg"
+                const href = imageData?.startsWith("data:")
+                    ? imageData
+                    : `data:image/jpeg;base64,${imageData}`;
+                link.href = href;
+                link.download = "warehouse_render.jpeg"
                 link.click()
             }}
             >
@@ -82,11 +101,13 @@ export function WarehouseRender({ sessionId, isTraining, mode}: WarehouseRenderP
         )}
         </div>
 
+        {/* const src =  */}
+
         {imageData ? (
         <img
-            src={`data:image/png;base64,${imageData}`}
+            // src={`data:image/jpeg;base64,${imageData}`}
+            src = {source}
             alt="Warehouse Rendering"
-            // className="w-full h-auto rounded border"
             className="w-full h-auto rounded border mt-1"
         />
         ) : (

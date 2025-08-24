@@ -113,18 +113,18 @@ class Visualize:
             
         else:
             image_shape,scl_x,scl_y,obs=self.gridarray_to_image(ThreeD=ThreeD_vis,img_shape=None)
-            if not hasattr(self,"fig"):
-                ThreeDV=ThreeD_visualization(self.grid_state,self.color_map,self.int_color,image_shape)
-                self.ThreeDV=ThreeDV
-                ThreeDV.pixal_value(self.cell_height,self.cell_width,scl_x,scl_y,obs)
-                ThreeDV.rendering3D(reward,count_time)
-                self.plt=ThreeDV.get_plt()
-                self.fig=ThreeDV.get_fig()
-                self.ax=ThreeDV.get_ax()
-                self.ThreeDV=ThreeDV
-            else:
-                self.ThreeDV.pixal_value(self.cell_height,self.cell_width,scl_x,scl_y,obs)
-                self.ThreeDV.rendering3D(reward,count_time)
+            # if not hasattr(self,"fig"):
+            #     ThreeDV=ThreeD_visualization(self.grid_state,self.color_map,self.int_color,image_shape)
+            #     self.ThreeDV=ThreeDV
+            #     ThreeDV.pixal_value(self.cell_height,self.cell_width,scl_x,scl_y,obs)
+            #     ThreeDV.rendering3D(reward,count_time)
+            #     self.plt=ThreeDV.get_plt()
+            #     self.fig=ThreeDV.get_fig()
+            #     self.ax=ThreeDV.get_ax()
+            #     self.ThreeDV=ThreeDV
+            # else:
+            #     self.ThreeDV.pixal_value(self.cell_height,self.cell_width,scl_x,scl_y,obs)
+            #     self.ThreeDV.rendering3D(reward,count_time)
                 
     def web_render(self,grid_state,reward=None,count_time=0,delivered=0,web_plt=None):
             img = self.gridarray_to_image(grid_state, ThreeD=False, img_shape=None)
@@ -139,7 +139,7 @@ class Visualize:
             fig.text(0.95, -0.24, f"Total Delivered: {delivered}",transform=ax.transAxes, ha='right', fontweight="bold", fontsize=14, color="black")
 
             buf = io.BytesIO()
-            fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+            fig.savefig(buf, format='JPEG', dpi=150, bbox_inches='tight') #originally we used 'png'
             plt.close(fig)  # Prevent memory leaks
             buf.seek(0)
             img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
@@ -156,184 +156,186 @@ class Visualize:
     #     except WebSocketDisconnect:
     #         print("Viewer disconnected")
 
-class ThreeD_visualization:
-    def __init__(self,grid_state,color_map,int_color,image_shape):
-        self.grid_state=grid_state
-        self.color_map=color_map
-        self.int_color=int_color
-        self.image_shape=image_shape
-        self.visual=False
-        self.fig=None
-        self.plt=plt
+# class ThreeD_visualization:
+#     def __init__(self,grid_state,color_map,int_color,image_shape):
+#         self.grid_state=grid_state
+#         self.color_map=color_map
+#         self.int_color=int_color
+#         self.image_shape=image_shape
+#         self.visual=False
+#         self.fig=None
+#         self.plt=plt
     
-    def pixal_value(self,cell_height,cell_width,scale_x,scale_y,observation):
-        if(self.fig==None):
-            fig=self.plt.figure()
-            self.fig=fig
-            ax=fig.add_subplot(cell_width,cell_height,1,projection='3d')
-            self.ax=ax
-        # fig=go.Figure()
-        self.cell_height=cell_height
-        self.cell_width=cell_width
+#     def pixal_value(self,cell_height,cell_width,scale_x,scale_y,observation):
+#         if(self.fig==None):
+#             fig=self.plt.figure()
+#             self.fig=fig
+#             ax=fig.add_subplot(cell_width,cell_height,1,projection='3d')
+#             self.ax=ax
+#         # fig=go.Figure()
+#         self.cell_height=cell_height
+#         self.cell_width=cell_width
         
-        for i in range(self.grid_state.shape[0]):
-            for j in range(self.grid_state.shape[1]):
-                color_code=self.grid_state[i,j]
-                color_name=self.int_color[color_code]
-                rgb_color=self.color_map[color_name]
-                #matplotlib 3D required
-                rgb=tuple(pixal/255 for pixal in rgb_color) #notice that the colors need to be scaled to be able to be used in the later functions
+#         for i in range(self.grid_state.shape[0]):
+#             for j in range(self.grid_state.shape[1]):
+#                 color_code=self.grid_state[i,j]
+#                 color_name=self.int_color[color_code]
+#                 rgb_color=self.color_map[color_name]
+#                 #matplotlib 3D required
+#                 rgb=tuple(pixal/255 for pixal in rgb_color) #notice that the colors need to be scaled to be able to be used in the later functions
                 
-                """
-                note that:
-                1) x,y,z: these are the coordinates
-                2) the first fig action defined below are simply just points, not actual 3D things
-                => only the update layout thing is actually turning the point into a 3D object
-                """
-                # width=i*self.cell_width
-                # height=j*self.cell_height
-                if(color_name=="gray"): #empty,height=0
-                    self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=0,color=rgb)
-                elif(color_name=="black"): #wall/shelves,height=15
-                    self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=15,color=rgb)
-                elif(color_name=="red"): #agent,height=5
-                    self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=5,color=rgb)
-                elif(color_name=="brown"): #package,height=3
-                    self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=3,color=rgb)
-                elif(color_name=="yellow"): #receiving region,height=0
-                    self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=0,color=rgb)
-                elif(color_name=="sky"): #transfer region,height=0
-                    self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=0,color=rgb)
-                else:
-                    raise ValueError("The color is invalid here!")
+#                 """
+#                 note that:
+#                 1) x,y,z: these are the coordinates
+#                 2) the first fig action defined below are simply just points, not actual 3D things
+#                 => only the update layout thing is actually turning the point into a 3D object
+#                 """
+#                 # width=i*self.cell_width
+#                 # height=j*self.cell_height
+#                 if(color_name=="gray"): #empty,height=0
+#                     self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=0,color=rgb)
+#                 elif(color_name=="black"): #wall/shelves,height=15
+#                     self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=15,color=rgb)
+#                 elif(color_name=="red"): #agent,height=5
+#                     self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=5,color=rgb)
+#                 elif(color_name=="brown"): #package,height=3
+#                     self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=3,color=rgb)
+#                 elif(color_name=="yellow"): #receiving region,height=0
+#                     self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=0,color=rgb)
+#                 elif(color_name=="sky"): #transfer region,height=0
+#                     self.ax.bar3d(x=i,y=j,z=0,dx=self.cell_width,dy=self.cell_height,dz=0,color=rgb)
+#                 else:
+#                     raise ValueError("The color is invalid here!")
                 
-                """Information about the Grid world if needed:
-                1) 19 rows(can comprehend as 20 rows if needed)
-                2) 70 columns(the x axis width)
-                """
-                observation[i*scale_x:(i+1)*scale_x,
-                            j*scale_y:(j+1)*scale_y,
-                            :]=rgb_color #now this stores the scaled rgb value for 3D
+#                 """Information about the Grid world if needed:
+#                 1) 19 rows(can comprehend as 20 rows if needed)
+#                 2) 70 columns(the x axis width)
+#                 """
+#                 observation[i*scale_x:(i+1)*scale_x,
+#                             j*scale_y:(j+1)*scale_y,
+#                             :]=rgb_color #now this stores the scaled rgb value for 3D
 
-                self.visual=True
-                #save to html(interactive 3D in browser)
-                # fig.write_html("Warehouse_Agent_navigation.html")
-        # return observation
-        # return fig
+#                 self.visual=True
+#                 #save to html(interactive 3D in browser)
+#                 # fig.write_html("Warehouse_Agent_navigation.html")
+#         # return observation
+#         # return fig
     
-    def get_plt(self):
-        return self.plt
+#     def get_plt(self):
+#         return self.plt
     
-    def get_fig(self):
-        return self.fig
+#     def get_fig(self):
+#         return self.fig
     
-    def get_ax(self):
-        return self.ax
+#     def get_ax(self):
+#         return self.ax
     
-    def rendering3D(self,reward,count_time):
-        if self.visual:
-            # self.set_axes_equal(self.ax)
-            height=self.grid_state.shape[1]*self.cell_height
-            width=self.grid_state.shape[0]*self.cell_width
-            depth=15
-            (self.plt).ion()
-            self.ax.set_box_aspect([width, height, depth]) #z-height: floor to ceiling
-            self.ax.view_init(elev=30, azim=45)  # elevation and azimuth
+#     def rendering3D(self,reward,count_time):
+#         if self.visual:
+#             # self.set_axes_equal(self.ax)
+#             height=self.grid_state.shape[1]*self.cell_height
+#             width=self.grid_state.shape[0]*self.cell_width
+#             depth=15
+#             (self.plt).ion()
+#             self.ax.set_box_aspect([width, height, depth]) #z-height: floor to ceiling
+#             self.ax.view_init(elev=30, azim=45)  # elevation and azimuth
 
-            (self.fig).canvas.manager.set_window_title("Warehouse Agent Navigation 3D")
-            self.reward_text=(self.fig).text(0.95,0.1,f"Total Reward:{reward:.2f}",ha='right',fontsize=12,color="chocolate")
-            self.time_text=(self.fig).text(0.95,0.05,f"Total Time:{count_time:.1f} Sec",ha='right',fontsize=12,color="chocolate")
-            self.visual=False #now in progress
-            (self.fig).set_size_inches(12,4,forward=True)
+#             (self.fig).canvas.manager.set_window_title("Warehouse Agent Navigation 3D")
+#             self.reward_text=(self.fig).text(0.95,0.1,f"Total Reward:{reward:.2f}",ha='right',fontsize=12,color="chocolate")
+#             self.time_text=(self.fig).text(0.95,0.05,f"Total Time:{count_time:.1f} Sec",ha='right',fontsize=12,color="chocolate")
+#             self.visual=False #now in progress
+#             (self.fig).set_size_inches(12,4,forward=True)
             
-            self.ax.set_xlim(0, width)
-            self.ax.set_ylim(0, height)
-            self.ax.set_zlim(0, depth)
-            # self.fig.tight_layout()
-        else:
-            self.reward_text.set_text(f"Total Reward:{reward:.2f}")
-            if(count_time<60):
-                self.time_text.set_text(f"Total Time:{count_time:.1f} Sec")
-            elif(count_time>=60 and count_time<3600):
-                count_time=count_time/60
-                self.time_text.set_text(f"Total Time:{count_time:.1f} Min")
-            else:
-                count_time=count_time/3600
-                self.time_text.set_text(f"Total Time:{count_time:.1f} Hrs")
+#             self.ax.set_xlim(0, width)
+#             self.ax.set_ylim(0, height)
+#             self.ax.set_zlim(0, depth)
+#             # self.fig.tight_layout()
+#         else:
+#             self.reward_text.set_text(f"Total Reward:{reward:.2f}")
+#             if(count_time<60):
+#                 self.time_text.set_text(f"Total Time:{count_time:.1f} Sec")
+#             elif(count_time>=60 and count_time<3600):
+#                 count_time=count_time/60
+#                 self.time_text.set_text(f"Total Time:{count_time:.1f} Min")
+#             else:
+#                 count_time=count_time/3600
+#                 self.time_text.set_text(f"Total Time:{count_time:.1f} Hrs")
                 
-        self.fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
-        self.plt.show()
-        (self.fig).canvas.draw()
-        (self.fig).canvas.flush_events()
+#         self.fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+#         self.plt.show()
+#         (self.fig).canvas.draw()
+#         (self.fig).canvas.flush_events()
     
-    def set_axes_equal(ax):
-        x_limits = ax.get_xlim3d()
-        y_limits = ax.get_ylim3d()
-        z_limits = ax.get_zlim3d()
+#     def set_axes_equal(ax):
+#         x_limits = ax.get_xlim3d()
+#         y_limits = ax.get_ylim3d()
+#         z_limits = ax.get_zlim3d()
         
-        x_range = abs(x_limits[1] - x_limits[0])
-        y_range = abs(y_limits[1] - y_limits[0])
-        z_range = abs(z_limits[1] - z_limits[0])
+#         x_range = abs(x_limits[1] - x_limits[0])
+#         y_range = abs(y_limits[1] - y_limits[0])
+#         z_range = abs(z_limits[1] - z_limits[0])
         
-        max_range = max(x_range, y_range, z_range)
+#         max_range = max(x_range, y_range, z_range)
 
-        x_middle = sum(x_limits) / 2
-        y_middle = sum(y_limits) / 2
-        z_middle = sum(z_limits) / 2
+#         x_middle = sum(x_limits) / 2
+#         y_middle = sum(y_limits) / 2
+#         z_middle = sum(z_limits) / 2
 
-        ax.set_xlim3d([x_middle - max_range / 2, x_middle + max_range / 2])
-        ax.set_ylim3d([y_middle - max_range / 2, y_middle + max_range / 2])
-        ax.set_zlim3d([z_middle - max_range / 2, z_middle + max_range / 2])
+#         ax.set_xlim3d([x_middle - max_range / 2, x_middle + max_range / 2])
+#         ax.set_ylim3d([y_middle - max_range / 2, y_middle + max_range / 2])
+#         ax.set_zlim3d([z_middle - max_range / 2, z_middle + max_range / 2])
 
-    """Important notes:
-    x,y,z: list of 8 coordinates for cube corners(point of each corner)
-    i,j,k: define which 3 points make each triangle face
-    1) For x,y,z:
-    point in term of which 3 faces intersect and form the point:
-        Index 0(starting(x,y,z))(bottom-front-left), 1(bottom-front-right), 2(bottom-back-right), 3(bottom-back-left),
-        4(top-front-left), 5(top-front-right), 6(top-back-right), 7(top-back-left)
-    2) for each i,j,k at index i,
-        these three points are the coordinate for the single triangle(2 triangles form a square)
-        *since i,j,k are just referencing relative vertex indices, so even if we alter the cell size, it doesn't matter so much
-    """
-    def draw_grid(self,x,y,z,color_name,color_rgb):
+#     """Important notes:
+#     x,y,z: list of 8 coordinates for cube corners(point of each corner)
+#     i,j,k: define which 3 points make each triangle face
+#     1) For x,y,z:
+#     point in term of which 3 faces intersect and form the point:
+#         Index 0(starting(x,y,z))(bottom-front-left), 1(bottom-front-right), 2(bottom-back-right), 3(bottom-back-left),
+#         4(top-front-left), 5(top-front-right), 6(top-back-right), 7(top-back-left)
+#     2) for each i,j,k at index i,
+#         these three points are the coordinate for the single triangle(2 triangles form a square)
+#         *since i,j,k are just referencing relative vertex indices, so even if we alter the cell size, it doesn't matter so much
+#     """
+#     def draw_grid(self,x,y,z,color_name,color_rgb):
         
-        width=self.cell_width
-        height=self.cell_height
-        if(color_name=="gray"): #empty
-            depth=0
-        elif(color_name=="black"):#wall
-            depth=15
-        elif(color_name=="red"):#agent
-            depth=5
-        elif(color_name=="brown"):#package
-            depth=3
-        elif(color_name=="yellow"):#receiving
-            depth=0
-        elif(color_name=="sky"):#transfer
-            depth=0
-        y=y*depth
+#         width=self.cell_width
+#         height=self.cell_height
+#         if(color_name=="gray"): #empty
+#             depth=0
+#         elif(color_name=="black"):#wall
+#             depth=15
+#         elif(color_name=="red"):#agent
+#             depth=5
+#         elif(color_name=="brown"):#package
+#             depth=3
+#         elif(color_name=="yellow"):#receiving
+#             depth=0
+#         elif(color_name=="sky"):#transfer
+#             depth=0
+#         y=y*depth
         
-        #this face things from gpt
-        faces = [
-        [0, 1, 2, 3],  # bottom
-        [4, 5, 6, 7],  # top
-        [0, 1, 5, 4],  # front
-        [2, 3, 7, 6],  # back
-        [1, 2, 6, 5],  # right
-        [3, 0, 4, 7]   # left
-        ]
+#         #this face things from gpt
+#         faces = [
+#         [0, 1, 2, 3],  # bottom
+#         [4, 5, 6, 7],  # top
+#         [0, 1, 5, 4],  # front
+#         [2, 3, 7, 6],  # back
+#         [1, 2, 6, 5],  # right
+#         [3, 0, 4, 7]   # left
+#         ]
         
-        return go.Mesh3d(
-            x=[x,x+width,x+width,x,x,x+width,x+width,x],
-            y=[y,y,y+depth,y+depth,y,y,y+depth,y+depth],
-            z=[z,z,z,z,z+height,z+height,z+height,z+height],
-            i=[face[0] for face in faces],
-            j=[face[1] for face in faces],
-            k=[face[2] for face in faces],
-            color=color_rgb,
-            opacity=0.9,
-            flatshading=True,
-            showscale=False
-        )
+#         return go.Mesh3d(
+#             x=[x,x+width,x+width,x,x,x+width,x+width,x],
+#             y=[y,y,y+depth,y+depth,y,y,y+depth,y+depth],
+#             z=[z,z,z,z,z+height,z+height,z+height,z+height],
+#             i=[face[0] for face in faces],
+#             j=[face[1] for face in faces],
+#             k=[face[2] for face in faces],
+#             color=color_rgb,
+#             opacity=0.9,
+#             flatshading=True,
+#             showscale=False
+#         )
+        
+        
         # return go.Bar3d(x=[x*width],y=[y],z=[z*height],dx=width,dy=depth,dz=height,color=color_rgb)

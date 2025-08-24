@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pandas==2.2.*
+gymnasium==0.29.*
+gym==0.26.*
+numpy<2
+matplotlib==3.8.*
+tensorflow-cpu==2.15.*
+plotly==5.23.0

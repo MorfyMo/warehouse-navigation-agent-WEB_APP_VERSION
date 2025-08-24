@@ -1,5 +1,13 @@
+'use client'
+
 // this file is intended for the comment page
 import { useEffect, useState } from "react";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
+// const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL!
+
+export const dynamic = 'force-dynamic'; // disables static optimization
+// export const revalidate = 0;
 
 interface CommentProp{
     message: string
@@ -13,7 +21,7 @@ export default function Comments(){
     const [message,setMessage]=useState("");
 
     useEffect(()=>{
-        fetch(`http://localhost:8000/api/msg/`)
+        fetch(`${API_BASE_URL}/api/msg/`)
             .then((res)=>res.json())
             .then((data)=>{
                 console.log("Fetched comment:", data);
@@ -27,7 +35,7 @@ export default function Comments(){
     },[]);
 
     const submitComment = async() =>{
-        await fetch("http://localhost:8000/api/add_msg/",{
+        await fetch(`${API_BASE_URL}/api/add_msg/`,{
             method: "POST",
             headers: {"Content-Type":"application/json"},
             body: JSON.stringify({
@@ -35,12 +43,12 @@ export default function Comments(){
                 message,
                 username,
                 time: new Date().toISOString(),
-            }),
+            })
         });
 
         setMessage("");
 
-        const res = await fetch(`http://localhost:8000/api/msg/`)
+        const res = await fetch(`${API_BASE_URL}/api/msg/`, { cache: 'no-store' })
         const data = await res.json()
         setComment(data);
 

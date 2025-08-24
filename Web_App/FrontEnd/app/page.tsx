@@ -18,13 +18,15 @@ import { Slider } from "@/components/ui/slider"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { WarehouseInfo } from "@/components/warehouse-info"
 import { WarehouseRender } from "@/components/warehouse_render"
+import { useWS } from "@/hooks/useWS"
+import { waitForEnv } from "@/lib/api"
 import WarehousePage from "./threeD"
 
 // import { WarehouseVisualization } from "@/components/warehouse-visualization"
-import { api, TrainingWebSocket, type TrainingConfig } from "@/lib/api"
+import { api, wsPaths, type TrainingConfig } from "@/lib/api"
 import { BarChart3, Brain, Pause, Play, RotateCcw, Settings, Warehouse, Zap } from "lucide-react"
 import { useTheme } from "next-themes"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 // this is for the result(Performance) showing part
 // export let lastStatsDqn={average_reward: 0.0, time: "0.0s"}
@@ -48,6 +50,11 @@ import { useEffect, useRef, useState } from "react"
   //   normalized_reward: 0.0,
   //   time: "0.0s",
   // };
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"
+const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL ?? "wss://warehouse-rl-api.fly.dev"
+
+export const dynamic = 'force-dynamic'; // disables static optimization
+// export const revalidate = 0;
 
 export default function RLShowcase() {
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<"dqn" | "ppo">("dqn")
@@ -56,6 +63,11 @@ export default function RLShowcase() {
   const [selectedEnvironment, setSelectedEnvironment] = useState<"warehouse">("warehouse")
   const [isTraining, setIsTraining] = useState(false)
   const [trainingProgress, setTrainingProgress] = useState(0)
+  const [envReady, setEnvReady] = useState(false)
+  const [wantStart, setWantStart] = useState(false);
+  // this constant ensures that the start button can only be triggered once even if the user click on the button twice or more:
+  const [isStarting, setIsStarting] = useState(false);
+  // const [plotURL, setplotURL] = useState<string | null | undefined>(null)
 
   const lastStatsDqn = useRef({average_reward: 0.0, time:"0.0s", delivered: 0})
   const lastStatsPpo = useRef({normalized_reward:0.0, time:"0.0s", delivered: 0})
@@ -72,7 +84,9 @@ export default function RLShowcase() {
   const [sessionId, setSessionId] = useState<string | null>(null)
   // const [socket2d, setSocket2d] = useState<WebSocket | null>(null);
   // const [socket3d, setSocket3d] = useState<WebSocket | null>(null);
-  const [wsConnection, setWsConnection] = useState<TrainingWebSocket | null>(null)
+
+  // this below is for the original wsConnections(before using "useWS"):
+  // const [wsConnection, setWsConnection] = useState<TrainingWebSocket | null>(null)
   const { theme } = useTheme()
 
 
@@ -81,17 +95,224 @@ export default function RLShowcase() {
     setMounted(true)
   }, [])
 
-  // Cleanup WebSocket on unmount
-  useEffect(() => {
-    return () => {
-      if (wsConnection) {
-        wsConnection.disconnect()
+  // Cleanup WebSocket on unmount(this below is the version for useEffect before using "useWS")
+  // useEffect(() => {
+  //   return () => {
+  //     if (wsConnection) {
+  //       wsConnection.disconnect()
+  //     }
+  //   }
+  // }, [wsConnection])
+
+  function validId(id: unknown): id is string{
+      return typeof id==="string" && id!=="undefined" && id!== "null" && id.length>0;
+  }
+
+  const handlePlotMsg = useCallback((event: MessageEvent) => {
+    if (typeof event.data !== "string") return;  // ignore binary
+    // the below two lines are to prevent issue(after "useWS" added):
+    let data: any
+    try {data = JSON.parse(event.data);} catch {return;}
+
+
+    if (data.type === "ping") {
+      // if ever want to reply: sendPlotRef.current?.({ type:"pong", ts: Date.now() });
+      return;
+    }
+
+    // if(typeof data.image_base64 === "string"){
+    //   setFrame64(data.image_base64)
+    // }
+
+    if (data.current_algo === "dqn") {
+      if (!data.stopped) {
+        setDqnData(prev => [
+          ...prev.slice(-50),
+          { average_reward: data.reward, time: data.time_text, delivered: data.delivered }
+        ]);
+        lastStatsDqn.current = { average_reward: data.reward, time: data.time_text, delivered: data.delivered };
+      } else {
+        setDqnData(prev => [...prev.slice(-50), lastStatsDqn.current]);
       }
     }
-  }, [wsConnection])
 
+    if (data.current_algo === "ppo") {
+      if (!data.stopped) {
+        setPpoData(prev => [
+          ...prev.slice(-50),
+          { normalized_reward: data.reward, time: data.time_text, delivered: data.delivered }
+        ]);
+        lastStatsPpo.current = { normalized_reward: data.reward, time: data.time_text, delivered: data.delivered };
+      } else {
+        setPpoData(prev => [...prev.slice(-50), lastStatsPpo.current]);
+      }
+    }
+  }, [setDqnData, setPpoData]);
+
+  const handleTrainMsg = useCallback((evt: MessageEvent) => {
+    if (typeof evt.data !== "string") return;
+    let data: any; try { data = JSON.parse(evt.data) } catch { return; }
+
+    if (data.type === "render" && typeof data.progress === "number") {
+      setTrainingProgress(data.progress);
+    } else if (data.type === "training_complete") {
+      setIsTraining(false);
+      setTrainingProgress(100);
+    } else if (data.type === "error") {
+      setIsTraining(false);
+    }
+  }, []);
+
+  const trainPath = validId(sessionId) && isTraining
+    ? wsPaths.training(sessionId) : undefined;
+
+  const plotPath =
+    validId(sessionId) && isTraining && envReady
+      ? (selectedDimension === "2D" ? wsPaths.plot2d(sessionId) : wsPaths.plot3d(sessionId))
+      : undefined;
+
+  const { status: trainStatus, send: sendTrain } = useWS({
+    path: trainPath,
+    onMessage: handleTrainMsg,
+    throttleMs: 100,
+  });
+
+  const { status: plotStatus, send: sendPlot } = useWS({
+    path: plotPath,
+    onMessage: handlePlotMsg,
+    throttleMs: selectedDimension === "3D" ? 66 : 33, // ~15fps vs ~30fps
+    // binaryType: "arraybuffer", // enable later if you switch to binary frames
+  });
+
+  // This below is the original version before using "useWS":
+  // useEffect(() => {
+  //   if(!sessionId||!isTraining) return;
+
+  //   const handleMessage = (event: MessageEvent) => {
+  //     const data = JSON.parse(event.data);
+  //     if(data.type==="ping"){
+  //       // socket.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+  //       return;
+  //     }
+
+  //     if(data.current_algo === "dqn"){
+  //       if(!data.stopped){
+  //         setDqnData(prev => [
+  //           ...prev.slice(-50),
+  //           {average_reward: data.reward, time: data.time_text, delivered: data.delivered}
+  //         ]);
+  //         lastStatsDqn.current = {average_reward: data.reward, time: data.time_text, delivered: data.delivered};
+  //       }else{
+  //         setDqnData(prev => [...prev.slice(-50), lastStatsDqn.current]);
+  //       }
+  //     }
+  //     if(data.current_algo === "ppo"){
+  //       if(!data.stopped){
+  //         setPpoData(prev => [
+  //           ...prev.slice(-50),
+  //           {normalized_reward: data.reward, time: data.time_text, delivered: data.delivered}
+  //         ]);
+  //         lastStatsPpo.current = {normalized_reward: data.reward, time: data.time_text, delivered: data.delivered}
+  //       }else{
+  //         setPpoData(prev => [...prev.slice(-50), lastStatsPpo.current]);
+  //       }
+  //     }
+  //   };
+
+  //   let socket: WebSocket | null = null
+
+  //   if(selectedDimension==="2D"){
+  //     socket = new WebSocket(`${NEXT_PUBLIC_WS_URL}/ws/plot/${sessionId}`);
+  //     socket.onmessage = handleMessage;
+  //   } else {
+  //     socket = new WebSocket(`${NEXT_PUBLIC_WS_URL}/ws/plot3d/${sessionId}`);
+  //     socket.onmessage = handleMessage;
+  //   }
+
+  //   return () => {
+  //     if (socket) socket.close()
+  //   };
+
+  // },[selectedAlgorithm, sessionId, isTraining, selectedDimension]);
+
+  // these below 2 blocks(about plot) are removed to make room for the socket inside warehouse_render function:
+  const sendPlotRef = useRef<typeof sendPlot | null>(null);
+
+  useEffect(() => {
+    sendPlotRef.current = sendPlot;
+    return () => { sendPlotRef.current = null; };
+  }, [sendPlot]);
+
+  // useEffect(() => {
+  //   if (!wantStart) return;
+  //   if (trainStatus === "open") {
+  //     sendTrain({ type: "ready" });
+  //     setWantStart(false); // prevent re-sending
+  //   }
+  // }, [wantStart, trainStatus, sendTrain]);
+
+  const trainKickoff = useRef(false);
+  useEffect(()=>{trainKickoff.current=false},[trainPath]);
+  useEffect(()=>{
+    if(trainStatus === "open" && trainPath && !trainKickoff.current){
+      sendTrain({type:"ready"})
+      trainKickoff.current=true
+    }
+  }, [trainStatus, trainPath, sendTrain]);
+
+  // this block is removed becaue we need to make room for the warehouse_render version of 2dplot showing:
+  const plotKickoff = useRef(false);
+  useEffect(()=>{plotKickoff.current=false},[plotPath]);
+  useEffect(()=>{
+    if(plotStatus==="open" && plotPath && !plotKickoff.current){
+      sendPlot({type:"ready"})
+      plotKickoff.current=true
+    }
+  },[plotStatus, plotPath, sendPlot]);
+
+  // this checks whether the environment is ready
+  useEffect(()=>{
+    let cancelled = false;
+    setEnvReady(false)
+      if(!validId(sessionId) || !isTraining){
+        return;
+      };
+
+    (async() =>{
+
+      try{
+        await waitForEnv(sessionId,{timeoutMs: 30_000, intervalMs: 500});
+        if(!cancelled) setEnvReady(true);
+
+      } catch(e) {
+        if(!cancelled) setEnvReady(false);
+        console.warn("env_init waiter:",e);
+      }
+    })();
+    return () => { cancelled = true;};
+
+  }, [sessionId, isTraining]);
+
+  const simulateTraining = () => {
+    setIsTraining(true)
+    setTrainingProgress(0)
+
+    const interval = setInterval(() => {
+      setTrainingProgress((prev) => {
+        if (prev >= 100) {
+          setIsTraining(false)
+          clearInterval(interval)
+          return 100
+        }
+        return prev + 2
+      })
+    }, 100)
+  }
 
   const handleStartTraining = async () => {
+    // this condition ensures that we are not double triggering the start training button
+    if(isTraining || isStarting) return;
+    setIsStarting(true);
     try {
       const config: TrainingConfig = {
         algorithm: selectedAlgorithm,
@@ -111,114 +332,30 @@ export default function RLShowcase() {
       const algo=config.algorithm
       setTrainingAlgo(algo)
 
-      if (result.success) {
+      // if (result.success) {
+      if(!result?.success||!result?.session_id) throw new Error("No session_id now");
         setSessionId(result.session_id)
         setIsTraining(true)
         setTrainingProgress(0)
+        setWantStart(true);
+        setIsStarting(true);
 
-        // Setup WebSocket connection for real-time updates
-        const ws = new TrainingWebSocket(result.session_id)
-        ws.connect(
-          (data) => {
-            // if (data.type === "training_progress") {
-            //note: we try this version here because we have modified the type to make it compatible to the matplotlib plot
-            if(data.type==="render"){
-              setTrainingProgress(data.progress)
-              // setRewardData(prev=>[...prev, data.reward])
-              // setEpsilonData(prev=>[...prev, data.epsilon])
-              // setLossData(prev=>[...prev, data.loss])
-              // setActorlossData(prev=>[...prev, data.actor_loss])
-              // setCriticlossData(prev=>[...prev, data.critic_loss])
-            }
-            if (data.type === "training_complete") {
-              setIsTraining(false)
-              setTrainingProgress(100)
-            }
-            
-          },
-          (error) => {
-            console.error("WebSocket error:", error)
-          },
-        )
-        setWsConnection(ws)
-      }
     } catch (error) {
       console.error("Failed to start training:", error)
-      // Fallback to simulation mode
       simulateTraining()
+    } finally{
+      setIsStarting(false)
     }
-  }
-
-  useEffect(() => {
-    if(!sessionId||!isTraining) return;
-
-    const handleMessage = (event: MessageEvent) => {
-      const data = JSON.parse(event.data);
-
-      if(data.current_algo === "dqn"){
-        if(!data.stopped){
-          setDqnData(prev => [
-            ...prev.slice(-50),
-            {average_reward: data.reward, time: data.time_text, delivered: data.delivered}
-          ]);
-          lastStatsDqn.current = {average_reward: data.reward, time: data.time_text, delivered: data.delivered};
-        }else{
-          setDqnData(prev => [...prev.slice(-50), lastStatsDqn.current]);
-        }
-      }
-      if(data.current_algo === "ppo"){
-        if(!data.stopped){
-          setPpoData(prev => [
-            ...prev.slice(-50),
-            {normalized_reward: data.reward, time: data.time_text, delivered: data.delivered}
-          ]);
-          lastStatsPpo.current = {normalized_reward: data.reward, time: data.time_text, delivered: data.delivered}
-        }else{
-          setPpoData(prev => [...prev.slice(-50), lastStatsPpo.current]);
-        }
-      }
-    };
-
-    let socket: WebSocket | null = null
-
-    if(selectedDimension==="2D"){
-      socket = new WebSocket(`ws://localhost:8000/ws/plot/${sessionId}`);
-      socket.onmessage = handleMessage;
-    } else {
-      socket = new WebSocket(`ws://localhost:8000/ws/plot3d/${sessionId}`);
-      socket.onmessage = handleMessage;
-    }
-
-    return () => {
-      if (socket) socket.close()
-    };
-
-  },[selectedAlgorithm, sessionId, isTraining, selectedDimension]);
-
-  const lastDqn = dqnData[dqnData.length - 1] ?? dqnData[0];
-  const lastPpo = ppoData[ppoData.length - 1] ?? ppoData[0];
-
-  const simulateTraining = () => {
-    setIsTraining(true)
-    setTrainingProgress(0)
-
-    const interval = setInterval(() => {
-      setTrainingProgress((prev) => {
-        if (prev >= 100) {
-          setIsTraining(false)
-          clearInterval(interval)
-          return 100
-        }
-        return prev + 2
-      })
-    }, 100)
   }
 
   const handleReset = async () => {
-    if (sessionId && wsConnection) {
+    // if (sessionId && wsConnection) {
+    if(sessionId && validId(sessionId)){
       try {
         await api.stopTraining(sessionId)
-        wsConnection.disconnect()
+        // wsConnection.disconnect()
+        sendTrain?.({type:"stop"})
+
       } catch (error) {
         console.error("Failed to stop training:", error)
       }
@@ -227,8 +364,12 @@ export default function RLShowcase() {
     setIsTraining(false)
     setTrainingProgress(0)
     setSessionId(null)
-    setWsConnection(null)
+    // setWsConnection(null)
   }
+
+  // the const of lastDqn and lastPpo doesn't change
+  const lastDqn = dqnData[dqnData.length - 1] ?? dqnData[0];
+  const lastPpo = ppoData[ppoData.length - 1] ?? ppoData[0];
 
   // Determine if we're in light or dark mode
   const isLightMode = mounted && theme === "light"
@@ -471,7 +612,7 @@ export default function RLShowcase() {
 
                   <div className="space-y-3">
                     <div className="flex space-x-2">
-                      <Button onClick={handleStartTraining} disabled={isTraining} className="flex-1">
+                      <Button onClick={handleStartTraining} disabled={isTraining||isStarting} className="flex-1">
                         {isTraining ? (
                           <>
                             <Pause className="h-4 w-4 mr-2" />
@@ -489,7 +630,7 @@ export default function RLShowcase() {
                       </Button>
                     </div>
 
-                    {(isTraining || trainingProgress > 0) && (
+                    {(isTraining || envReady) && (
                       <div>
                         <div className="flex justify-between text-sm mb-1">
                           <span>Episode Progress</span>
@@ -526,7 +667,7 @@ export default function RLShowcase() {
                 </CardHeader>
                 <CardContent>
                   {sessionId && selectedDimension === "2D" &&(
-                      <WarehouseRender sessionId={sessionId} isTraining={isTraining} mode={selectedDimension}/>
+                      <WarehouseRender sessionId={sessionId} isTraining={isTraining} mode={selectedDimension} envReady={envReady}/>
                     )}
                   {sessionId && selectedDimension === "3D" &&(
                       <WarehousePage sessionId={sessionId} isTraining={isTraining} dimension={selectedDimension} />
@@ -552,6 +693,7 @@ export default function RLShowcase() {
                   progress={trainingProgress}
                   sessionId={sessionId}
                   mode={selectedDimension}
+                  envReady={envReady}
                   // rewardData={rewardData}
                   // lossData={lossData}
                   // epsilonData={epsilonData}
@@ -759,12 +901,12 @@ export default function RLShowcase() {
           <p className="text-sm">
             GitHub:{' '}
             <a
-              href="https://github.com/MorfyMo?tab=repositories"
+              href="https://github.com/MorfyMo/Warehouse-Navigation-Agent_MorfyMo"
               target="_blank"
               rel="noopener noreferrer"
               className="underline hover: text-gray-300 dark:text-gray-700"
             >
-              https://github.com/MorfyMo?tab=repositories
+              https://github.com/MorfyMo/Warehouse-Navigation-Agent_MorfyMo
             </a>
           </p>
           

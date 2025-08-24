@@ -44,9 +44,12 @@ def DQN_args_parser():
     parser.add_argument("--eps_decay",type=float,default=0.99999995)
     parser.add_argument("--eps_min",type=float,default=0.01)
     parser.add_argument("--logdirectory",type=str,default="logs")
-    return parser.parse_args(), parser
+    # return parser.parse_args(), parser
+    return parser
 
-args,parser = DQN_args_parser()
+# args,parser = DQN_args_parser()
+parser = DQN_args_parser()
+args = parser.parse_args([]) #added
 
 #prepare for the tensorboard launch
 logdir=os.path.join(args.logdirectory,parser.prog,args.env,datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -148,8 +151,18 @@ class DQN:
     def train(self,states,targets):
         self.nn_model().fit(states,targets,epochs=1)
     
+    # def predict(self,state):
+    #     return self.nn_model().predict(state)
+    
+    @tf.function(reduce_retracing=True, input_signature=[tf.TensorSpec(shape=[None,None],dtype=tf.float32)])
+    def _predict_fn(self,state):
+        return self.nn_model()(state,training=False)
+    
     def predict(self,state):
-        return self.nn_model().predict(state)
+        state = np.asarray(state,dtype=np.float32)
+        if state.ndim == 1:
+            state = state.reshape(1,-1)
+        return self._predict_fin(state).numpy()
     
     #now this part implement the policy: e.g. \epsilon-greedy
     def get_action(self,state,bounce,carry,count_bounce):

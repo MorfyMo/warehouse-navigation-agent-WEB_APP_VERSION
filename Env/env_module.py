@@ -9,21 +9,22 @@ import sys
 import os
 # from tensorflow.keras import keras # type: ignore
 from tensorflow.keras.layers import Input, Dense, InputLayer # type: ignore
-import BFS_map,env_get # type: ignore
-from env_get import Get
-from BFS_map import BFS # type: ignore
+from Env import BFS_map,env_get # type: ignore
+from Env.env_get import Get
+from Env.BFS_map import BFS # type: ignore
 from collections import deque
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-import gym
+import gymnasium as gym # type: ignore
 import copy
 import time
 import math
-import Visualization # type: ignore
-from Visualization import ThreeD_visualization,Visualize # type: ignore
-from mpl_toolkits.mplot3d import Axes3D # type: ignore
+from Env import Visualization
+# import Visualization # type: ignore
+from Env.Visualization import Visualize # type: ignore
+# from mpl_toolkits.mplot3d import Axes3D # type: ignore
 
 #Now we first initialize the color code for visualization
 empty = gray = 0
@@ -1219,8 +1220,14 @@ class Environment(gym.Env):
             
             layout = self.grid_state.astype(int).tolist()  # Make sure this returns 2D list
             # print("layout sent for 3D version:",layout)
-            await websocket.send_json({"layout": layout})
-                # await asyncio.sleep(0.5)
+            
+            # CURRENTLY we just don't send from this end(COMMENTED it out):
+            # await websocket.send_json({"layout": layout})
+            
+            # this below is to generate the plausible payload for 3d frame
+            payload = {"type":"render","layout":layout,"ts":time.time()}
+            return payload
+            # await asyncio.sleep(0.5)
         except TypeError as e:
             print(f"Layout stream error: {e}")
         except WebSocketDisconnect:

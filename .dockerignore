@@ -1,0 +1,29 @@
+# flyctl launch added from Web_App/FrontEnd/.gitignore
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+Web_App/FrontEnd/node_modules
+
+# next.js
+Web_App/FrontEnd/.next
+# Web_App/FrontEnd/out
+
+# production
+Web_App/FrontEnd/build
+
+# debug
+Web_App/FrontEnd/**/npm-debug.log*
+Web_App/FrontEnd/**/yarn-debug.log*
+Web_App/FrontEnd/**/yarn-error.log*
+Web_App/FrontEnd/**/.pnpm-debug.log*
+
+# env files
+Web_App/FrontEnd/**/.env*
+
+# vercel
+Web_App/FrontEnd/**/.vercel
+
+# typescript
+Web_App/FrontEnd/**/*.tsbuildinfo
+Web_App/FrontEnd/**/next-env.d.ts
+fly.toml

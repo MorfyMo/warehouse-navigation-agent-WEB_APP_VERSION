@@ -1,7 +1,11 @@
-import { ThemeProvider } from "@/components/theme-provider"
-import type { Metadata } from "next"
-import type React from "react"
-import "./globals.css"
+export const dynamic = 'force-dynamic';
+// export const revalidate: number | false = 0;
+
+
+import { ThemeProvider } from "@/components/theme-provider";
+import type { Metadata } from "next";
+import type React from "react";
+import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Warehouse Agents Navigation",

@@ -48,10 +48,14 @@ if __name__=="__main__":
     
     #then create the agent
     if(nn_choice=="DQN"):
-        DQN_args,DQN_parser=DQN_args_parser()
+        # DQN_args,DQN_parser=DQN_args_parser()
+        DQN_parser=DQN_args_parser()
+        DQN_args=DQN_parser.parse_args([])
         agent=DQN_module.Agent(DQN_args,env,DQN_module.writer,False,ThreeD,return4web)
     elif(nn_choice=="PPO"):
-        PPO_args,PPO_parser=PPO_args_parser()
+        # PPO_args,PPO_parser=PPO_args_parser()
+        PPO_parser=PPO_args_parser()
+        PPO_args=PPO_parser.parse_args([])
         agent=PPO_module.Agent(PPO_args,env,PPO_module.writer,ThreeD,return4web)
     else:
         raise ValueError("Input Error: You have to enter either 'DQN' or 'PPO'!")

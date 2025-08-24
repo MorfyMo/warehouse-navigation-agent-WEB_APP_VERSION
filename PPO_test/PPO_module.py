@@ -29,9 +29,12 @@ def PPO_args_parser():
     parser.add_argument("--gae_lambda",type=float,default=0.95)
     parser.add_argument("--gamma",type=float,default=0.99)
     parser.add_argument("--logdir",default="logs")
-    return parser.parse_args(), parser
+    # return parser.parse_args(), parser
+    return parser
     
-args, parser=PPO_args_parser()
+# args, parser=PPO_args_parser()
+parser=PPO_args_parser()
+args = parser.parse_args([]) #added
 
 #initialize tensorboard
 log_directory=os.path.join(args.logdir,parser.prog,args.env,datetime.now().strftime("%Y/%m/%d-%H:%M:%S"))
@@ -75,6 +78,16 @@ class Actor:
         self.std_bound=std_bound
         self.args=args
         self.opt=tf.keras.optimizers.Adam(self.args.actor_lr)
+        
+        @tf.function(reduce_retracing=True,input_signature=[tf.TensorSpec([None,self.action_dim],tf.float32),tf.TensorSpec([None],tf.int32)])
+        def _log_pdf_fn(logits,action):
+            log_prob=tf.nn.log_softmax(logits)
+            log_policy_pdf = tf.squeeze(log_prob)
+            log_policy_pdf = log_policy_pdf[action]
+        
+            return log_policy_pdf
+        
+        self._log_pdf_fn = _log_pdf_fn
     
     #this is the neural network:
     # through which we derive the mu and std for selecting action
@@ -114,18 +127,25 @@ class Actor:
     
     #this is the general function that computes the log PDF(probability density function): in specific, this is the function that computes the main formula
     #note that since our action space is discrete instead of continuous, we want to replace mu and std with the transformation of logits
+    # def log_pdf(self,logits,action):
+    #     #Note: these below are for continuous
+    #     # std = tf.clip_by_value(std,self.std_bound[0],self.std_bound[1])
+    #     # var = std**2
+    #     # log_policy_pdf=-0.5*((action-mu)**2/var)-0.5*tf.math.log(2*np.pi*var)
+        
+    #     #Discrete version for our Environment:
+    #     log_prob=tf.nn.log_softmax(logits)
+    #     log_policy_pdf = tf.squeeze(log_prob)
+    #     log_policy_pdf = log_policy_pdf[action]
+        
+    #     return log_policy_pdf
+    
     def log_pdf(self,logits,action):
-        #Note: these below are for continuous
-        # std = tf.clip_by_value(std,self.std_bound[0],self.std_bound[1])
-        # var = std**2
-        # log_policy_pdf=-0.5*((action-mu)**2/var)-0.5*tf.math.log(2*np.pi*var)
-        
-        #Discrete version for our Environment:
-        log_prob=tf.nn.log_softmax(logits)
-        log_policy_pdf = tf.squeeze(log_prob)
-        log_policy_pdf = log_policy_pdf[action]
-        
-        return log_policy_pdf
+        logits = tf.convert_to_tensor(logits,tf.float32)
+        action = tf.convert_to_tensor(action, tf.int32)
+        if logits.shape.rank == 1:
+            logits = logits[None, :]
+        return self._log_pdf_fn(logits,action)
         
     #in specific, this is the function that computes the main formula
     def compute_loss(self,log_old_policy,log_new_policy,actions,gaes): #this is the actual one that computes GAE and the reward after clip

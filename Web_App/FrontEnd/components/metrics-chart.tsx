@@ -2,9 +2,13 @@
 
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { useWS } from "@/hooks/useWS"
+import { wsPaths } from "@/lib/api"
 import { Download } from "lucide-react"
 import { useTheme } from "next-themes"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
+
+const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
 
 interface MetricsChartProps {
   algorithm: "dqn" | "ppo"
@@ -12,15 +16,15 @@ interface MetricsChartProps {
   progress: number
   sessionId?: string | null
   mode: string
-  // rewardData: number[]
-  // lossData: number[]
-  // epsilonData: number[]
-  // actorlossData: number[]
-  // criticlossData: number[]
+  envReady: boolean
+}
+
+function validId(id: unknown): id is string{
+    return typeof id==="string" && id!=="undefined" && id!== "null" && id.length>0
 }
 
 //the parameters after sessionId are the parameters for metric chart
-export function MetricsChart({ algorithm, isTraining, progress, sessionId, mode}: MetricsChartProps) {
+export function MetricsChart({ algorithm, isTraining, progress, sessionId, mode, envReady}: MetricsChartProps) {
   const [rewardData, setRewardData] = useState<number[]>([])
   const [lossData, setLossData] = useState<number[]>([])
   const [epsilonData, setEpsilonData] = useState<number[]>([])
@@ -37,99 +41,136 @@ export function MetricsChart({ algorithm, isTraining, progress, sessionId, mode}
     setMounted(true)
   }, [])
 
-  // // Fetch matplotlib plots from backend
   // useEffect(() => {
-  //   if (!sessionId || !isTraining) return
+  //   if (!sessionId || !isTraining) return;
 
-  //   const fetchPlots = async () => {
-  //     try {
-  //       const plotImage = await api.getMatplotlibPlot("training_progress",sessionId)
-  //       setMatplotlibPlot(plotImage)
-  //     } catch (error) {
-  //       console.log("Matplotlib plots not available, using simulated data")
+  //   //this assumes that we just directly return if we don't have 2D
+  //   const route = mode === "2D" ? `${NEXT_PUBLIC_WS_URL}/ws/plot/${sessionId}` : `${NEXT_PUBLIC_WS_URL}/ws/plot3d/${sessionId}`;
+
+  //   const socket = new WebSocket(route);
+
+  //   socket.onmessage = (event) => {
+  //     const data = JSON.parse(event.data);
+  //     if(data.type==="ping"){
+  //       socket.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+  //       return;
   //     }
-  //   }
+  //     console.log("[WS Plot Message]", data);
+  //   };
 
-  //   const interval = setInterval(fetchPlots, 2000)
-  //   return () => clearInterval(interval)
-  // }, [sessionId, isTraining])
+  //   socket.onmessage = (event) => {
+  //     const data = JSON.parse(event.data);
+  //     if(data.type==="ping"){
+  //       socket.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+  //       return;
+  //     }
+  //     if (data.image_base64) {
+  //       setMatplotlibPlot(data.image_base64);
+  //     }
+
+  //     // if (data.type === "metrics_update") {
+  //     if(data.type==="render"){
+  //       setIsRendering(true)
+  //       if (typeof data.reward === "number") {
+  //         setRewardData((prev) => [...prev.slice(-49), data.reward])
+  //       }
+  //       if (typeof data.loss === "number" && algorithm === "dqn") {
+  //         setLossData((prev) => [...prev.slice(-49), data.loss])
+  //       }
+  //       if (typeof data.epsilon === "number" && algorithm === "dqn") {
+  //         setEpsilonData((prev) => [...prev.slice(-49), data.epsilon])
+  //       }
+  //       if (typeof data.loss === "number" && algorithm === "ppo") {
+  //         setLossData((prev) => [...prev.slice(-49), data.actor_loss])
+  //       }
+  //       if (typeof data.epsilon === "number" && algorithm === "ppo") {
+  //         setEpsilonData((prev) => [...prev.slice(-49), data.critic_loss])
+  //       }
+  //     }
+  //     else if(data.type==="ready"){
+  //       setStart(true)
+  //     }
+  //     else{
+  //       setIsRendering(false)
+  //       setStart(false)
+  //     }
+  //   };
+
+  //   return () => socket.close();
+  // }, [sessionId, isTraining]);
+
+  const handlePlotMsg = useCallback((event: MessageEvent) => {
+    if (typeof event.data !== "string") return;
+    let data: any;
+    try { data = JSON.parse(event.data); } catch {return;}
+
+    if(data.type==="ping"){
+      return;
+    }
+
+    if(typeof data.image_base64 === "string"){
+      setMatplotlibPlot(data.image_base64);
+    }
+
+    const the_type = data.type;
+    if (the_type === "render" || the_type === "metrics_update"){
+      setIsRendering(true);
+
+      if(typeof data.reward === "number"){
+        setRewardData(prev => [...prev.slice(-49),data.reward]);
+      }
+
+      if(algorithm === "dqn"){
+        if(typeof data.loss === "number"){
+          setLossData(prev => [...prev.slice(-49), data.loss]);
+        }
+        if(typeof data.epsilon === "number"){
+          setEpsilonData(prev => [...prev.slice(-49), data.epsilon]);
+        }
+      }else if (algorithm === "ppo"){
+        if (typeof data.actor_loss === "number"){
+          setActorlossData(prev => [...prev.slice(-49), data.actor_loss]);
+        }
+        if (typeof data.critic_loss === "number"){
+          setCriticlossData(prev => [...prev.slice(-49), data.critic_loss]);
+        }
+      }
+      return;
+    }
+
+    if(the_type === "ready"){
+      setStart(true);
+      return;
+    }
+    if(the_type === "episode_end"||data.stopped === true){
+      setIsRendering(false);
+      setStart(false);
+      return;
+    }
+
+  }, [algorithm]);
+
+  const plotPath =
+    validId(sessionId) && isTraining && envReady
+      // ? (mode === "2D" ? `/ws/plot/${sessionId}` : `/ws/plot3d/${sessionId}`)
+      ? (mode === "2D" ? wsPaths.plot2d(sessionId) : wsPaths.plot3d(sessionId))
+      : undefined;
+
+  const { status: plotStatus /*, send: sendPlot */ } = useWS({
+    path: plotPath,
+    onMessage: handlePlotMsg,
+    throttleMs: mode === "3D" ? 66 : 33, // ~15fps vs ~30fps
+  });
 
   useEffect(() => {
-    if (!sessionId || !isTraining) return;
+  if (!validId(sessionId) || !isTraining || !envReady) {
+    setRewardData([]); setLossData([]);
+    setEpsilonData([]); setActorlossData([]); setCriticlossData([]);
+    setMatplotlibPlot(null);
+    setIsRendering(false); setStart(false);
+  }
+}, [sessionId, isTraining, envReady, algorithm]);
 
-    //this assumes that we just directly return if we don't have 2D
-    const route = mode === "2D" ? `ws://localhost:8000/ws/plot/${sessionId}` : `ws://localhost:8000/ws/plot3d/${sessionId}`;
-
-    const socket = new WebSocket(route);
-
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log("[WS Plot Message]", data);
-    };
-
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.image_base64) {
-        setMatplotlibPlot(data.image_base64);
-      }
-
-      // if (data.type === "metrics_update") {
-      if(data.type==="render"){
-        setIsRendering(true)
-        if (typeof data.reward === "number") {
-          setRewardData((prev) => [...prev.slice(-49), data.reward])
-        }
-        if (typeof data.loss === "number" && algorithm === "dqn") {
-          setLossData((prev) => [...prev.slice(-49), data.loss])
-        }
-        if (typeof data.epsilon === "number" && algorithm === "dqn") {
-          setEpsilonData((prev) => [...prev.slice(-49), data.epsilon])
-        }
-        if (typeof data.loss === "number" && algorithm === "ppo") {
-          setLossData((prev) => [...prev.slice(-49), data.actor_loss])
-        }
-        if (typeof data.epsilon === "number" && algorithm === "ppo") {
-          setEpsilonData((prev) => [...prev.slice(-49), data.critic_loss])
-        }
-      }
-      else if(data.type==="ready"){
-        setStart(true)
-      }
-      else{
-        setIsRendering(false)
-        setStart(false)
-      }
-    };
-
-    return () => socket.close();
-  }, [sessionId, isTraining]);
-
-//the simulation version:
-  // useEffect(() => {
-  //   if (!isTraining) return
-
-  //   const interval = setInterval(() => {
-  //     setRewardData((prev) => {
-  //       const newReward =
-  //         algorithm === "dqn" ? Math.random() * 100 + progress * 2 : Math.random() * 120 + progress * 2.5
-  //       return [...prev.slice(-49), newReward]
-  //     })
-
-  //     setLossData((prev) => {
-  //       const newLoss = Math.max(0, 10 - progress * 0.1 + Math.random() * 2)
-  //       return [...prev.slice(-49), newLoss]
-  //     })
-
-  //     if (algorithm === "dqn") {
-  //       setEpsilonData((prev) => {
-  //         const newEpsilon = Math.max(0.01, 1 - progress * 0.01)
-  //         return [...prev.slice(-49), newEpsilon]
-  //       })
-  //     }
-  //   }, 500)
-
-  //   return () => clearInterval(interval)
-  // }, [isTraining, algorithm, progress])
 
   const maxReward = Math.max(...rewardData, 100)
   const maxLoss = Math.max(...lossData, 10)
@@ -146,8 +187,8 @@ export function MetricsChart({ algorithm, isTraining, progress, sessionId, mode}
   const downloadPlot = () => {
     if (matplotlibPlot) {
       const link = document.createElement("a")
-      link.href = `data:image/png;base64,${matplotlibPlot}`
-      link.download = `${algorithm}_training_plot.png`
+      link.href = `data:image/jpeg;base64,${matplotlibPlot}`
+      link.download = `${algorithm}_training_plot.jpeg`
       link.click()
     }
   }
@@ -166,7 +207,7 @@ export function MetricsChart({ algorithm, isTraining, progress, sessionId, mode}
           </div>
           <div className="flex justify-center">
             <img
-              src={`data:image/png;base64,${matplotlibPlot}`}
+              src={`data:image/jpeg;base64,${matplotlibPlot}`}
               alt="Training Progress"
               className="max-w-full h-auto rounded border"
             />

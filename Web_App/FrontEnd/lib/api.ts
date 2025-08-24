@@ -1,6 +1,14 @@
 // API configuration and utilities for connecting to Python backend
 // const API_BASE_URL_backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"
+const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL ?? "wss://warehouse-rl-api.fly.dev"
+
+// to avoid hard coding for things before /api
+export const API =
+  process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") ?? "";
+
+export const dynamic = 'force-dynamic'; // disables static optimization
+// export const revalidate = 0;
 
 export interface TrainingConfig {
   algorithm: "dqn" | "ppo"
@@ -30,43 +38,152 @@ export interface EnvironmentState {
   shelves: { x: number; y: number; width: number; height: number }[]
 }
 
+async function withTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(new DOMException("Timeout", "TimeoutError")), timeoutMs);
+  try {
+    const res = await fetch(input, { cache: "no-store", ...init, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+export const wsPaths = {
+  training: (id: string) => `/ws/training/${id}`,
+  plot2d:  (id: string) => `/ws/plot/${id}`,
+  plot3d:  (id: string) => `/ws/plot3d/${id}`,
+  layout: (id: string) => `/ws/layout/${id}`,
+  layout2d: (id:string) => `/ws/vis2d/${id}`
+};
+
+// to help centralized the behaviors, we add this fetch function
+type FetchOptions = RequestInit & {timeoutMs?: number};
+
+async function fetchJSON<T>(url: string, init: FetchOptions={}): Promise<T>{
+  const {timeoutMs, ...rest}=init;
+  const ctl = new AbortController();
+  const timer = timeoutMs ? setTimeout(()=>ctl.abort(), timeoutMs):null;
+
+  try{
+    const response = await fetch(url,{...rest,signal:ctl.signal,cache: "no-store"});
+    if(!response.ok) throw new Error(`${response.status}${response.statusText}`);
+    return response.json() as Promise<T>;
+  }finally{
+    if(timer) clearTimeout(timer);
+  }
+}
+
+// this function tries to retrieve the result from env_init in "api_server" file
+export async function envInit(sessionId:string|null){
+  const r = await fetch(`${API_BASE_URL}/api/env_init/${sessionId}`,{
+    method: "GET",
+    cache: "no-store",
+  });
+  if(!r.ok) throw new Error(`env_init ${r.status}`);
+  return r.json() as Promise<{is_ready:boolean}>
+}
+
+export async function waitForEnv(
+  sessionId: string|null,
+  opts: {timeoutMs?: number; intervalMs?: number}={}
+){
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const intervalMs = opts.intervalMs ?? 500;
+  const start = Date.now();
+  for (;;){
+    const {is_ready} = await envInit(sessionId);
+    if(is_ready) return true;
+    if (Date.now()-start>timeoutMs){
+      throw new Error("env_init timed out");
+    }
+    await new Promise((r)=> setTimeout(r, intervalMs));
+  }
+}
+
 // API functions
 export const api = {
   // Start training
-  async startTraining(config: TrainingConfig): Promise<{ success: boolean; session_id: string }> {
-    const response = await fetch(`${API_BASE_URL}/api/training/start`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(config),
-    })
-    return response.json()
+  async startTraining(config: TrainingConfig,opts?: { signal?: AbortSignal },timeoutMs=180_000): Promise<{ success: boolean; session_id: string }> {
+  //   const response = await withTimeout(`${API_BASE_URL}/api/training/start`, {
+  //     method: "POST",
+  //     headers: { "Content-Type": "application/json" },
+  //     body: JSON.stringify(config),
+  //     signal: opts?.signal,
+  //   },
+  //   Number(process.env.NEXT_PUBLIC_START_TRAINING_TIMEOUT_MS ?? 60000)
+  // );
+  //   if (!response.ok) throw new Error(await response.text());
+  //   return response.json()
+  // },
+    return fetchJSON<{success:boolean; session_id:string}>(
+      `${API_BASE_URL}/api/training/start`,
+      {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(config),
+        timeoutMs,
+      }
+    );
   },
 
   // Stop training
-  async stopTraining(sessionId: string): Promise<{ success: boolean }> {
-    const response = await fetch(`${API_BASE_URL}/api/training/stop/${sessionId}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId }),
-    })
-    return response.json()
+  async stopTraining(sessionId: string, opts?: { signal?: AbortSignal }, timeoutMs=20_000): Promise<{ success: boolean }> {
+  //   const response = await withTimeout(`${API_BASE_URL}/api/training/stop/${sessionId}`, {
+  //     method: "POST",
+  //     headers: { "Content-Type": "application/json" },
+  //     body: JSON.stringify({ session_id: sessionId }),
+  //     keepalive: true,
+  //     signal: opts?.signal,
+  //   },
+  //   10000
+  // );
+  //   if(!response.ok) throw new Error(await response.text());
+  //   return response.json()
+  // },
+    return fetchJSON<{success:boolean;session_id:string}>(
+      `${API_BASE_URL}/api/training/stop/${sessionId}`,
+      {
+        method:"POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+        keepalive: true,
+        timeoutMs,
+      }
+    )
   },
 
   // Get training status
-  async getTrainingStatus(sessionId: string): Promise<TrainingStatus> {
-    const response = await fetch(`${API_BASE_URL}/api/training/status/${sessionId}`)
+  async getTrainingStatus(sessionId: string, opts?: { signal?: AbortSignal },timeoutMs=10_000): Promise<TrainingStatus> {
+    const response = await withTimeout(`${API_BASE_URL}/api/training/status/${sessionId}`,
+    { signal: opts?.signal },
+    10000
+  );
+    if (!response.ok) throw new Error(await response.text());
     return response.json()
   },
+  //   return fetchJSON<{success:boolean;session_id:string}>(
+  //     `${API_BASE_URL}/api/training/status/${sessionId}`,
+  //     {timeoutMs,}
+
+  //   )
+  // },
 
   // Get environment state
-  async getEnvironmentState(sessionId: string): Promise<EnvironmentState> {
-    const response = await fetch(`${API_BASE_URL}/api/environment/state/${sessionId}`)
+  async getEnvironmentState(sessionId: string, opts?: { signal?: AbortSignal }): Promise<EnvironmentState> {
+    const response = await withTimeout(`${API_BASE_URL}/api/environment/state/${sessionId}`,
+    { signal: opts?.signal },
+    10000
+    );
+    if(!response.ok) throw new Error(await response.text());
     return response.json()
   },
 
   // Get matplotlib plot
-  async getMatplotlibPlot(plotType: string, sessionId: string): Promise<string> {
-    const response = await fetch(`${API_BASE_URL}/api/plots/${plotType}/${sessionId}`);
+  async getMatplotlibPlot(plotType: string, sessionId: string, opts?: { signal?: AbortSignal }): Promise<string> {
+    const response = await withTimeout(`${API_BASE_URL}/api/plots/${plotType}/${sessionId}`, { signal: opts?.signal },
+      20000
+    );
     const text=await response.text();
     //this is for debug purpose
     if(!response.ok){
@@ -100,7 +217,6 @@ export const api = {
   //   })
   // }),
 
-
 }
 
 // WebSocket connection for real-time updates
@@ -118,6 +234,11 @@ export class TrainingWebSocket {
 
     this.ws.onmessage = (event) => {
       const data = JSON.parse(event.data)
+      if(data.type==="ping"){
+        this.ws?.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+        return;
+      }
+
       onMessage(data)
     }
 
@@ -144,10 +265,15 @@ export function connectToLivePlot(
   onImageUpdate: (imageBase64: string) => void,
   onError?: (error: string) => void
 ): WebSocket {
-  const ws = new WebSocket(`ws://localhost:8000/ws/plot/${sessionId}`);
+  const ws = new WebSocket(`${NEXT_PUBLIC_WS_URL}/ws/plot/${sessionId}`);
 
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data);
+    if(data.type==="ping"){
+      ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+      return;
+    }
+
     if (data.image_base64) {
       onImageUpdate(data.image_base64);
     } else if (data.error && onError) {

@@ -1,4 +1,9 @@
+'use client'
+
 import { useEffect } from "react";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+// const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+const NEXT_PUBLIC_WS_URL = process.env.NEXT_PUBLIC_WS_URL!
 
 export let lastStatsDqn={average_reward: 0.0, time: "0.0s"}
 export let lastStatsPpo = {normalized_reward: 0.0, time: "0.0s"}
@@ -27,10 +32,14 @@ interface UpdateProps{
 
 export function UpdateDqn({sessionId}:UpdateProps){
     useEffect(() => {
-        const socket = new WebSocket(`ws://localhost:8000/ws/plot/${sessionId}`);
+        const socket = new WebSocket(`${NEXT_PUBLIC_WS_URL}/ws/plot/${sessionId}`);
 
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
+            if(data.type==="ping"){
+                socket.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+                return;
+            }
             updateDqn(data); // updates lastValidDqnStats
         };
 
@@ -42,10 +51,14 @@ export function UpdateDqn({sessionId}:UpdateProps){
 
 export function UpdatePpo({sessionId}:UpdateProps){
     useEffect(() => {
-        const socket = new WebSocket(`ws://localhost:8000/ws/plot/${sessionId}`);
+        const socket = new WebSocket(`${NEXT_PUBLIC_WS_URL}/ws/plot/${sessionId}`);
 
         socket.onmessage = (event) => {
             const data = JSON.parse(event.data);
+            if(data.type==="ping"){
+                socket.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+                return;
+            }
             updatePpo(data); // updates lastValidDqnStats
         };
 

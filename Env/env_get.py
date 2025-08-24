@@ -4,8 +4,9 @@ Note: since the compare distance function is returning in a opposite logic, ever
 to the target region(which is usually receiving region in this case).
 This function is used for helper agents on searching to help agents that are away from the receiving region to carry packages.
 """
-import BFS_map
-from BFS_map import BFS
+# from . import BFS_map
+from Env import BFS_map
+from Env.BFS_map import BFS
 import numpy as np
 import math
 empty = gray = 0

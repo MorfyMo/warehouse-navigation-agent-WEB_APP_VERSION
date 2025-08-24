@@ -1,0 +1,29 @@
+# fly.toml app configuration file generated for warehouse-rl on 2025-08-09T15:58:46-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'warehouse-rl-api'
+primary_region = 'ewr'
+
+[build]
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ['app']
+
+[http_service.checks]
+  [http_service.checks.http]
+    path = "/health"
+    interval = "10s"
+    timeout = "2s"
+
+
+[[vm]]
+  memory = '2gb'
+  cpu_kind = 'performance'
+  cpus = 2

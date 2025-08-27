@@ -45,24 +45,44 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from starlette.websockets import WebSocketDisconnect, WebSocketState
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 import uvicorn
 import json
 import copy
 
 app = FastAPI(title="Warehouse Navigation API")
+# import os
+# from fastapi import Request, Response
+# from starlette.middleware.base import BaseHTTPMiddleware
+
+# def _instance_id() -> str:
+#     return os.environ.get("FLY_MACHINE_ID") or os.environ.get("FLY_ALLOC_ID", "local-dev")
+
+# STICKY_COOKIE = "fly_instance"
+
+# class FlyStickyMiddleware(BaseHTTPMiddleware):
+#     async def dispatch(self, request: Request, call_next):
+#         want = request.cookies.get(STICKY_COOKIE)
+#         have = _instance_id()
+#         q = request.query_params.get("instance")
+#         if q:
+#             want = q
+#         if want and want != have:
+#             # Tell Fly to replay this request to the desired instance
+#             return Response(status_code=409, headers={"fly-replay": f"instance={want}"})
+#         resp: Response = await call_next(request)
+#         # Set/refresh the cookie so future requests stick
+#         resp.set_cookie(STICKY_COOKIE, have, secure=True, samesite="none", httponly=False, path="/")
+#         return resp
 
 frame_queues: dict[str, asyncio.Queue] = {}
-MIN_PERIOD = 0.1 #10 Hz cap
-
-# app.mount("/", StaticFiles(directory="Web_App/FrontEnd/out", html=True), name="frontend")
+# MIN_PERIOD = 0.1 #10 Hz cap
 
 origins = [
     "https://warehouse-rl.fly.dev", #the frontend link
     "http://localhost:3000", #the local host version
 ]
-
 
 # Enable CORS for the frontend
 #this creates the FastAPI application(application initialization)
@@ -71,16 +91,15 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
-
+# app.add_middleware(FlyStickyMiddleware)
 
 api = APIRouter(prefix="/api")
 
 @api.get("/health")
 def health():
     return {"ok": True}
-
 
 # app.include_router(api)
 # Store active training sessions
@@ -147,6 +166,7 @@ class TrainingResponse(BaseModel):
     success: bool
     session_id: str
     message: str
+    # instance: str
     
 class LayoutRequest(BaseModel):
     # session_id: str
@@ -239,6 +259,20 @@ def put_drop(q: "queue.Queue", item) -> bool:
         except queue.Full:
             return False
         
+def stop_helper(session):
+    # Stop training thread if running
+    if session.get("training_thread") and session["training_thread"].is_alive():
+        session["stop_requested"] = True
+    
+    stop_flag=session.get("stop_flag")
+    if(stop_flag):
+        try:
+            stop_flag.stop()
+        except Exception:
+            pass
+    
+    session["status"] = "stopped"
+        
 async def drain_queue_to_ws(websocket, send_lock: asyncio.Lock, q: "queue.Queue",*,poll_timeout_sec: float=1.0, drop_stale: bool = True):
     # consecutive_fails=0
     try:
@@ -309,9 +343,11 @@ async def ws_receiver(ws: WebSocket, send_lock: asyncio.Lock, ready_event: async
                     # session["subs"][topic]=max(0,session["subs"].get(topic,1)-1)
                     break
                 elif t=="stop":
-                    session["stop_requested"]=True
+                    stop_helper(session)
+                    break
             except WebSocketDisconnect:
-                session["stop_requested"] = True
+                # session["stop_requested"] = True
+                print("[WS] ws_receiver has a WebSocketDisconnect")
                 break
             except asyncio.CancelledError:
                 break
@@ -441,24 +477,18 @@ async def env_init(session_id: str):
     session=active_sessions.get(session_id)
     # this below line for env and stop_flag are added to ensure that the plot is shown as expected:
     # return {"is_ready":session is not None and session.get("env") is not None}
-    return {"is_ready":session is not None and session.get("env") is not None and session.get("stop_flag") is not None}
+    return {"is_ready":session is not None and session.get("env") is not None and session.get("stop_flag") is not None,}
+            # "instance":_instance_id()}
 
 @api.post("/training/stop/{session_id}")
 async def stop_training(session_id: str):
     if session_id not in active_sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+        # raise HTTPException(status_code=404, detail="Session not found")
+        # currently we treat the already quiet as success:
+        return {"success": True, "message":"No such session(already stopped)"}
     
     session = active_sessions[session_id]
-    session["status"] = "stopped"
-    
-    stop_flag=active_sessions[session_id].get("stop_flag")
-    if(stop_flag):
-        stop_flag.stop()
-    
-    # Stop training thread if running
-    if session.get("training_thread") and session["training_thread"].is_alive():
-        session["stop_requested"] = True
-    
+    stop_helper(session)
     return {"success": True, "message": "Training stopped"}
 
 #this is intended for getting stop_status
@@ -644,6 +674,7 @@ async def safe_send(ws: WebSocket, message, lock: asyncio.Lock | None = None, ti
 @app.websocket("/ws/layout/{session_id}")
 async def websocket_layout(websocket: WebSocket, session_id:str):
     print("[WS ROUTE] Entered layout websocket route")
+    await websocket.accept()
     
     if session_id not in active_sessions:
         # this accept line is added later(just to test)
@@ -656,24 +687,51 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
     if origin not in origins:
         # await websocket.accept()
         # await safe_send(websocket,{"type": "error", "error": "Origin not allowed", "origin": origin},lock=asyncio.Lock())
-        # await websocket.send_json({"type": "error", "error": "Origin not allowed", "origin": origin})
-        # await websocket.close(code=1008, reason="2D plot but no origin")
-        await try_close(websocket,1008,"2D plot but no origin")
+        await try_close(websocket,1008,"3D plot but no origin(origin not allowed)")
         return
     
-    session = active_sessions.get(session_id)
-    # previously we have the environment check and stop_flag check here
-    await websocket.accept()
-    
-    # send_lock = get_ws_lock(session,"layout")
+    # previously we have the environment check and stop_flag check here[NECESSARY]
+    # await websocket.accept()
     send_lock = asyncio.Lock()
     ready_event = asyncio.Event()
+
+    # env & session & stop_flag check
+    session = active_sessions.get(session_id)
+    for _ in range(60):
+        session = active_sessions.get(session_id)
+        if not session:
+            break
+        environment = session.get("env")
+        stop_flag = session.get("stop_flag")
+        if environment is not None and stop_flag is not None and ("progress_log" in session):
+            break
+        await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
+        await asyncio.sleep(0.1)
+        
+    session = active_sessions.get(session_id)
+    if not session or not session.get("stop_flag") or ("progress_log" not in session):
+        # NOTE: here we temporarily commented these things and replace with "not ready"
+        # this helps to keep use alive but not open the socket
+        await try_close(websocket,1001,"3D layout not ready")
+        return
+
+    env = session.get("env")
+    stop_flag = session.get("stop_flag")
+    if env is None or stop_flag is None:
+        await safe_send(websocket, {"type":"error", "error":"environemnt not ready"}, lock = send_lock)
+        # await websocket.close(code=1008,reason="3D layout but no env and no stop_flag")
+        await try_close(websocket,1008,"3D layout but no env and no stop_flag")
+        return
+    await safe_send(websocket, {"type":"ready"}, lock = send_lock)
+    
+    # send_lock = asyncio.Lock()
+    # ready_event = asyncio.Event()
     
     # this below line is to receive the heartbeat from the frontend(replace the heartbeat)
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event,session,"3d_subs"))
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     try:
-        frame_q: "queue.Queue" = active_sessions[session_id]["frame3d"]
+        frame_q: "queue.Queue" = session.get("frame3d")
         sender_task = asyncio.create_task(drain_queue_to_ws(websocket, send_lock, frame_q))
         
         try:
@@ -700,36 +758,8 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
         #             print(f"[3d layout] Unexpected first message: {msg}")
         # except Exception as e:
         #     print(f"[3d layout] Did not receive 'ready' in time: {e}")
-        
-        for _ in range(60):
-            session = active_sessions.get(session_id)
-            if not session:
-                break
-            environment = session.get("env")
-            stop_flag = session.get("stop_flag")
-            if environment is not None and stop_flag is not None and ("progress_log" in session):
-                break
-            await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
-            await asyncio.sleep(0.1)
-            
-        session = active_sessions.get(session_id)
-        if not session or not session.get("stop_flag") or ("progress_log" not in session):
-            # NOTE: here we temporarily commented these things and replace with "not ready"
-            # await safe_send(websocket, {"type":"error","error":"not ready"})
-            # await websocket.close(code=1011,reason="not ready for 3d plot showing")
-            
-            # this helps to keep use alive but not open the socket
-            await safe_send(websocket,{"type":"not ready"},lock=send_lock)
-            return
 
-        env = session.get("env")
-        stop_flag = session.get("stop_flag")
-        if env is None or stop_flag is None:
-            await safe_send(websocket, {"type":"error", "error":"environemnt not ready"}, lock = send_lock)
-            # await websocket.close(code=1008,reason="3D layout but no env and no stop_flag")
-            await try_close(websocket,1008,"3D layout but no env and no stop_flag")
-            return
-        await safe_send(websocket, {"type":"ready"}, lock = send_lock)
+        # original check block
 
         # Main loop: stream layout until training is done
         while websocket.application_state is WebSocketState.CONNECTED and not env.done and not stop_flag():
@@ -747,6 +777,12 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
         return
     except WebSocketDisconnect:
         print("[Layout WS] Disconnected.")
+    except Exception as e:
+        reason = (str(e) or "internal error for 3d plot")[:120]
+        try:
+            await try_close(websocket,1011,reason)
+        except Exception:
+            pass
     finally:
         # if hb_task:
         #     hb_task.cancel()
@@ -765,6 +801,14 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
 @app.websocket("/ws/plot3d/{session_id}")
 async def metrics3d(websocket: WebSocket, session_id:str):
     print(f"[BACKEND] WebSocket layout route hit: session_id = {session_id}")
+    await websocket.accept()
+
+    if session_id not in active_sessions:
+        # this accept line is added later(just to test)
+        # await websocket.accept()
+        # await websocket.close(code=1008,reason="3D layout but no session")
+        await try_close(websocket,1008,"3D metrics but no session")
+        return
     
     origin = websocket.headers.get("origin")
     if origin not in origins:
@@ -773,31 +817,46 @@ async def metrics3d(websocket: WebSocket, session_id:str):
         await try_close(websocket,1008,"3D metrics but we don't have origin")
         return
 
-    session = active_sessions.get(session_id)
-    env = session.get("env") if session else None
+    # [NECESSARY]
+    # await websocket.accept()
+    
+    # env & session & stop_flag check
 
-    await websocket.accept()
     send_lock = asyncio.Lock()
-
+    ready_event = asyncio.Event()
+    
+    session = active_sessions.get(session_id)
+    for _ in range(50):  # ~5s total
+        session = active_sessions.get(session_id)
+        if session and session.get("stop_flag") and "progress_log" in session:
+            break
+        await asyncio.sleep(0.1)
+    
+    if not session or not session.get("stop_flag") or "progress_log" not in session:
+        await safe_send(websocket, {"type":"error","error":"not ready"},lock=send_lock)
+        # await websocket.close(code=1011, reason="not ready for 3d metric showing")
+        await try_close(websocket,1011,"not ready for 3d metric showing")
+        return
+    
+    env = session.get("env") if session else None
     stop_flag = session.get("stop_flag")
     if env is None or stop_flag is None:
         # await websocket.accept()
         # await websocket.close(code=1008, reason="3D metrics but no env or no stop_flag")
         await try_close(websocket,1008,"3D metrics but no env or no stop_flag")
         return
-
-    ready_event = asyncio.Event()
     
     # this line is intended to check whether the sending thing works here
     print("[BACKEND] WebSocket accepted")
-
-    env=session["env"]
 
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock,ready_event,session,"3d_metrics_subs"))
     await safe_send(websocket, {"type": "hello", "session_id": session_id}, lock=send_lock)
     try:
-        progress_q: "queue.Queue" = active_sessions[session_id]["metrics3d"]
+        progress_q: "queue.Queue" = session.get("metrics3d")
+        if progress_q is None:
+            await try_close(websocket, 1011, "[WS] 3d metrics queue missing")
+            return
         sender_task = asyncio.create_task(drain_queue_to_ws(websocket, send_lock, progress_q))
         
         try:
@@ -809,17 +868,8 @@ async def metrics3d(websocket: WebSocket, session_id:str):
             # with contextlib.suppress(asyncio.CancelledError): await receiver_task
             # return
             await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
-        
-        for _ in range(50):  # ~5s total
-            if session and session.get("stop_flag") and "progress_log" in session:
-                break
-            await asyncio.sleep(0.1)
-        
-        if not session or not session.get("stop_flag") or "progress_log" not in session:
-            await safe_send(websocket, {"type":"error","error":"not ready"},lock=send_lock)
-            # await websocket.close(code=1011, reason="not ready for 3d metric showing")
-            await try_close(websocket,1011,"not ready for 3d metric showing")
-            return
+
+        # original check block
         
         # await env.stream_layout(websocket)
         while websocket.application_state is WebSocketState.CONNECTED and not env.done and not stop_flag():
@@ -859,13 +909,13 @@ async def metrics3d(websocket: WebSocket, session_id:str):
         print(f"Unexpected error: {e}")
         try:
             await asyncio.sleep(0.01)
-            await safe_send(websocket,{"error": str(e)},lock=send_lock)
+            # await safe_send(websocket,{"error": str(e)},lock=send_lock)
             # await websocket.send_text(json.dumps({"error": str(e)}))
+            await try_close(websocket,1011,"3D metrics but there is exception")
         except:
             pass
-        # await websocket.close(code=1008, reason="3D metrics but there is exception")
-        await try_close(websocket,1008,"3D metrics but there is exception")
-        return
+        # await try_close(websocket,1008,"3D metrics but there is exception")
+        # return
     finally:
         # if hb_task:
         #     hb_task.cancel()
@@ -883,32 +933,40 @@ async def metrics3d(websocket: WebSocket, session_id:str):
 """this function is used to compute the metrics for 2D"""
 @app.websocket("/ws/plot/{session_id}")
 async def metrics2d(websocket: WebSocket, session_id: str):
-    # await websocket.accept()
     print(f"[WebSocket] Connected for session {session_id}")
+    await websocket.accept()
 
     # hb_task = None
     if session_id not in active_sessions:
         # await websocket.accept()
-        # await safe_send(websocket,{"type": "error","error": "Session not found"},lock=asyncio.Lock())
-        # await websocket.close(code=1008, reason="2D plot but no valid session_id")
         await try_close(websocket,1008,"2D plot but no valid session_id")
         return
 
     origin = websocket.headers.get("origin")
     if origin not in origins:
         # await websocket.accept()
-        # await websocket.send_json({"type": "error", "error": "Origin not allowed", "origin": origin})
-        # await safe_send(websocket,{"type": "error", "error": "Origin not allowed", "origin": origin},lock=asyncio.Lock())
-        # await websocket.close(code=1008, reason="2D plot but no origin")
         await try_close(websocket,1008,"2D plot but no origin")
         return
     
-    await websocket.accept()
+    # [NECESSARY]
+    # await websocket.accept()
     send_lock = asyncio.Lock()
-    session = active_sessions[session_id]
-    env = session.get("env")
     
-    stop_flag=active_sessions[session_id].get("stop_flag")
+    session = active_sessions.get(session_id)
+    for _ in range(60):  # up to ~6s with 0.1s sleeps
+        session = active_sessions.get(session_id)
+        if session and session.get("stop_flag") and ("progress_log" in session):
+            break
+        await asyncio.sleep(0.1)
+    
+    if not session or not session.get("stop_flag") or ("progress_log" not in session):
+        await safe_send(websocket, {"type":"error","error":"not ready"},lock=send_lock)
+        # await websocket.close(code=1011,reason="not ready for 2d metrics")
+        await try_close(websocket,1011,"not ready for 2d metrics")
+        return
+    
+    env = session.get("env")
+    stop_flag=session.get("stop_flag")
     if env is None or stop_flag is None:
         # await websocket.accept()
         if(env is None):
@@ -925,13 +983,12 @@ async def metrics2d(websocket: WebSocket, session_id: str):
         return
     
     # send_lock = get_ws_lock(session,"plot")
-    
     ready_event = asyncio.Event()
     
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event, session,"2d_metrics_subs"))
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     try:
-        progress_q: "queue.Queue" = active_sessions[session_id]["metrics2d"]
+        progress_q: "queue.Queue" = session.get("metrics2d")
         sender_task = asyncio.create_task(drain_queue_to_ws(websocket,send_lock,progress_q))
         
         try:
@@ -944,16 +1001,7 @@ async def metrics2d(websocket: WebSocket, session_id: str):
             # return
             await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
         
-        for _ in range(60):  # up to ~6s with 0.1s sleeps
-            if session and session.get("stop_flag") and ("progress_log" in session):
-                break
-            await asyncio.sleep(0.1)
-        
-        if not session or not session.get("stop_flag") or ("progress_log" not in session):
-            await safe_send(websocket, {"type":"error","error":"not ready"},lock=send_lock)
-            # await websocket.close(code=1011,reason="not ready for 2d metrics")
-            await try_close(websocket,1011,"not ready for 2d metrics")
-            return
+        # original check block
         
         while websocket.application_state is WebSocketState.CONNECTED and not env.done and not stop_flag():
             try:
@@ -1021,8 +1069,8 @@ async def metrics2d(websocket: WebSocket, session_id: str):
 """
 @app.websocket("/ws/vis2d/{session_id}")
 async def websocket_plot_stream(websocket: WebSocket, session_id: str):
-    # await websocket.accept()
     print(f"[WebSocket] Connected for session {session_id}")
+    await websocket.accept()
 
     # hb_task = None
     if session_id not in active_sessions:
@@ -1040,16 +1088,49 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
         await try_close(websocket,1008,"2D plot but no origin")
         return
     
-    session = active_sessions[session_id]
-    await websocket.accept()
+    # [NECESSARY]
+    # await websocket.accept()
+    
+    session = active_sessions.get(session_id)
     # send_lock = get_ws_lock(session,"vis2d")
     send_lock = asyncio.Lock()
-    ready_event=asyncio.Event()
     
+    for _ in range(60):  # up to ~6s with 0.1s sleeps
+        session = active_sessions.get(session_id)
+        if not session:
+            break
+        environment = session.get("env")
+        stop_flag = session.get("stop_flag")
+        if environment is not None and stop_flag is not None and "progress_log" in session:
+            break
+        await safe_send(websocket, {"type":"not ready"}, lock=send_lock)
+        await asyncio.sleep(0.1)
+    
+    session = active_sessions.get(session_id)
+    if not session:
+        await safe_send(websocket,{"type":"error","error":"not ready"},lock=send_lock)
+        # await websocket.close(code=1011, reason="not ready for 2d visualization")
+        await try_close(websocket,1011,"not ready for 2d visualization")
+        return
+
+    # currently we move this block to here
+    env = session.get("env")
+    stop_flag=session.get("stop_flag")
+    if env is None or stop_flag is None:
+        # this helps to keep use alive but not open the socket
+        await safe_send(websocket,{"type":"not ready"},lock=send_lock)
+        return
+    # and we also add this ready sent thing here
+    await safe_send(websocket, {"type": "ready"}, lock=send_lock)
+    
+    ready_event=asyncio.Event()
     receiver_task = asyncio.create_task(ws_receiver(websocket,send_lock,ready_event,session,"2d_subs"))
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     try:
-        frame_q: "queue.Queue" = active_sessions[session_id]["frame_q"]
+        frame_q: "queue.Queue" = session.get("frame_q")
+        if frame_q is None:
+            await try_close(websocket,1011,"[WS] 2d visualization queue is missing")
+            return
         sender_task = asyncio.create_task(drain_queue_to_ws(websocket, send_lock,frame_q))
         
         # WE REAPLACED the ABOVE VERSION for a better one below:
@@ -1080,34 +1161,7 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
             # return
             await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
         
-        for _ in range(60):  # up to ~6s with 0.1s sleeps
-            session = active_sessions.get(session_id)
-            if not session:
-                break
-            environment = session.get("env")
-            stop_flag = session.get("stop_flag")
-            if environment is not None and stop_flag is not None and "progress_log" in session:
-                break
-            await safe_send(websocket, {"type":"not ready"}, lock=send_lock)
-            await asyncio.sleep(0.1)
-        
-        session = active_sessions.get(session_id)
-        if not session:
-            await safe_send(websocket,{"type":"error","error":"not ready"},lock=send_lock)
-            # await websocket.close(code=1011, reason="not ready for 2d visualization")
-            await try_close(websocket,1011,"not ready for 2d visualization")
-            return
-
-        # currently we move this block to here
-        env = session.get("env")
-        stop_flag=active_sessions[session_id].get("stop_flag")
-        if env is None or stop_flag is None:
-            # this helps to keep use alive but not open the socket
-            await safe_send(websocket,{"type":"not ready"})
-            return
-        # and we also add this ready sent thing here
-        await safe_send(websocket, {"type": "ready"}, lock=send_lock)
-        
+        # original check block
         
         while websocket.application_state is WebSocketState.CONNECTED and not env.done and not stop_flag():
             try:
@@ -1191,6 +1245,7 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
 @app.websocket("/ws/training/{session_id}") #note that in the routing, paths like "../training/" are just custom routing
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     print(f"WebSocket connection attempt for session_id={session_id}")
+    # await websocket.accept()
 
     # hb_task = None
     if session_id not in active_sessions:
@@ -1201,27 +1256,36 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         await try_close(websocket,1008,"websocket training endpoint but no valid session_id")
         return
     
+    origin = websocket.headers.get("origin")
+    if origin not in origins:
+        await try_close(websocket, 1008, "training WS: origin not allowed")
+        return
+    
+    # [NECESSARY]
     await websocket.accept()
-    session = active_sessions[session_id]
+    session = active_sessions.get(session_id)
     # send_lock = get_ws_lock(session,"training")
     # await safe_send(websocket, {"type": "hello", "session_id": session_id},lock=send_lock)
     send_lock = asyncio.Lock()
     ready_event = asyncio.Event()
     
     # heartbeat
-    progress_q: "queue.Queue" = active_sessions[session_id]["progress_q"]
+    progress_q: "queue.Queue" = session.get("progress_q")
     sender_task = asyncio.create_task(drain_queue_to_ws(websocket, send_lock, progress_q))
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event, session,"training"))
     try:
-        try:
-            await asyncio.wait_for(ready_event.wait(),timeout=8.0)
-        except asyncio.TimeoutError:
-            print("[WS] the websocket endpoint did not receive anything")
-            # await try_close(websocket,1000,"timeout and not ready from the client")
-            # receiver_task.cancel()
-            # with contextlib.suppress(asyncio.CancelledError): await receiver_task
-            # return
-            await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
+        # try:
+        #     await asyncio.wait_for(ready_event.wait(),timeout=8.0)
+        # except asyncio.TimeoutError:
+        #     print("[WS] the websocket endpoint did not receive anything")
+        #     # await try_close(websocket,1000,"timeout and not ready from the client")
+        #     # receiver_task.cancel()
+        #     # with contextlib.suppress(asyncio.CancelledError): await receiver_task
+        #     # return
+        #     await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
+        # except WebSocketDisconnect as e: #we would consider the disconnect case as well
+        #     print(f"[TRAINING-WS] client disconnected before READY (code={e.code})")
+        #     return
         
         event_loop=asyncio.get_running_loop()
         # I add this loop to the session as well
@@ -1254,7 +1318,6 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                         put_drop(progress_q,{"type":current_status, **update})
                     except Exception as e:
                         log.warning("[Training Start] progress_q enqueue failed: %s",e)
-                    
                 
                 if(config.episodes):
                     # Modified training loop to send updates
@@ -1268,6 +1331,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 stop_flag = active_sessions[session_id]["stop_flag"]
                 
                 print("[DEBUG] Entered run_training() and about to call agent.train")
+                
+                print("[DEBUG] run_training starting with episodes:", max_episodes)
+                print("[DEBUG] stop_flag initially set:", stop_flag)
+
                 agent.train(max_episodes,progress_callback,stop_flag)
                 
                 session["status"] = "completed"
@@ -1290,11 +1357,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     },lock=send_lock),
                     event_loop
                 )
+                traceback.print_exc()
+            finally:
+                print("[TRAINING] thread existing; status of this session is ",session.get("status"))
         
         # Start training thread
-        training_thread = threading.Thread(target=run_training)
-        session["training_thread"] = training_thread
-        training_thread.start()
+        if session.get("training_thread") is None:
+            training_thread = threading.Thread(target=run_training, daemon=True)
+            session["training_thread"] = training_thread
+            training_thread.start()
         
         # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
         
@@ -1311,6 +1382,15 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         #     except WebSocketDisconnect:
         #         session["stop_requested"] = True
         #         break
+        
+        try:
+            await asyncio.wait_for(ready_event.wait(),timeout=8.0)
+        except asyncio.TimeoutError:
+            print("[WS] the websocket endpoint did not receive anything")
+            await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
+        except WebSocketDisconnect as e: #we would consider the disconnect case as well
+            print(f"[TRAINING-WS] client disconnected before READY (code={e.code})")
+            # return
                 
         while (
                 websocket.application_state is WebSocketState.CONNECTED
@@ -1331,13 +1411,32 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             with contextlib.suppress(asyncio.CancelledError): await receiver_task
         except Exception:
             pass
-        if session_id in active_sessions:
-            active_sessions[session_id]["stop_requested"] = True
+        
+        # if session_id in active_sessions:
+        #     active_sessions[session_id]["stop_requested"] = True
+            
+        # Log exactly why we're exiting
+        exit_snapshot = {
+            "where": "training_ws_exit",
+            "connected": getattr(websocket, "application_state", None),
+            "has_thread": session.get("training_thread") is not None,
+            "thread_alive": (session.get("training_thread").is_alive() if session.get("training_thread") else None),
+            "stop_requested": session.get("stop_requested"),
+            "status": session.get("status"),
+        }
+        print(exit_snapshot)
             
         # if(websocket.application_state==WebSocketState.CONNECTED):
         #     await websocket.close(code=1000, reason="normal close for websocket endpoint(the training process)")
         await try_close(websocket,1000,"normal close for websocket endpoint(the training process)")
         return
+
+
+# @app.get("/favicon.ico", include_in_schema=False)
+# async def favicon():
+#     return FileResponse("static/favicon.ico")
+
+# app.mount("/", StaticFiles(directory="Web_App/FrontEnd/out", html=True), name="frontend")
 
 if __name__ == "__main__":
     print("Starting RL Project API server...")

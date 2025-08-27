@@ -70,6 +70,8 @@ class Actor:
     3. model: neural network model(as always required by those classes)
     4. optimizer
     """
+    _logPDF_cache = {}
+    
     def __init__(self,args,state_dim,action_dim,action_bound,std_bound):
         self.state_dim=state_dim
         self.action_dim=action_dim
@@ -79,15 +81,34 @@ class Actor:
         self.args=args
         self.opt=tf.keras.optimizers.Adam(self.args.actor_lr)
         
-        @tf.function(reduce_retracing=True,input_signature=[tf.TensorSpec([None,self.action_dim],tf.float32),tf.TensorSpec([None],tf.int32)])
-        def _log_pdf_fn(logits,action):
-            log_prob=tf.nn.log_softmax(logits)
-            log_policy_pdf = tf.squeeze(log_prob)
-            log_policy_pdf = log_policy_pdf[action]
+        # @tf.function(reduce_retracing=True,input_signature=[tf.TensorSpec([None,self.action_dim],tf.float32),tf.TensorSpec([None],tf.int32)])
+        # def _log_pdf_fn(logits,action):
+        #     logits = tf.reshape(logits,[-1,self.action_dim])
+        #     action = tf.reshape(action,[-1])
+            
+        #     log_prob=tf.nn.log_softmax(logits,axis=-1)
+        #     log_policy_pdf = tf.squeeze(log_prob)
+        #     log_policy_pdf = log_policy_pdf[action]
+        #     return log_policy_pdf
+        #     # return tf.gather(log_prob, action, batch_dims=1)
         
-            return log_policy_pdf
+        # @staticmethod
+        # @tf.function(reduce_retracing=True)
         
-        self._log_pdf_fn = _log_pdf_fn
+        fn = self._logPDF_cache.get(self.action_dim)
+        if fn is None:
+            def _log_pdf_fn(logits, action):
+                return -tf.nn.sparse_softmax_cross_entropy_with_logits(labels=action,logits=logits)
+
+            fn = tf.function(
+                _log_pdf_fn,
+                input_signature=[
+                    tf.TensorSpec(shape=[None, self.action_dim],dtype=tf.float32),
+                    tf.TensorSpec(shape=[None],dtype=tf.int32),
+                ],
+            )
+            self._logPDF_cache[self.action_dim]=fn
+        self._log_pdf_fn = fn
     
     #this is the neural network:
     # through which we derive the mu and std for selecting action
@@ -106,22 +127,35 @@ class Actor:
         # mu_output=Lambda(lambda x:x*self.action_bound)(out_mu)
         # std_output=Dense(self.action_dim,activation="softplus")(dense6)
         #For discrete we have direct one output
-        action_prob=Dense(self.action_dim,activation="softmax")(dense6)
+        # action_prob=Dense(self.action_dim,activation="softmax")(dense6)
+        action_prob=Dense(self.action_dim,activation=None)(dense6)
         return keras.Model(inputs=[state_input],outputs=[action_prob])
     
     #we get the action from the pdf of the distribution
     # that is formed by mu and std returned from the NN model
-    def get_action(self,state):
-        state=state.reshape(-1,self.state_dim) #first reshape the states to the shape allowed by our state dimension
+    def get_action(self,state,training: bool=False):
+        #first reshape the states to the shape allowed by our state dimension
+        state = tf.convert_to_tensor(state,dtype=tf.float32)
+        state=tf.reshape(state,(-1,self.state_dim))
         #now we get the mu and std required to form our distribution by predicting based on the states
-        action_prob=self.model.predict(state)
+        # action_prob=self.model.predict(state)
+        # action_prob = self.model(state)
         
         #with the distribution derived, we sample the action from the distribution
-        logits=tf.math.log(action_prob)
-        action=tf.random.categorical(logits,1)
-        action = int(action.numpy()[0][0])
+        # logits=tf.math.log(action_prob)
+        logits = self.model(state,training=training)
+        action = tf.random.categorical(logits,num_samples=1)[:,0]
+        # action=tf.random.categorical(logits,1)
+        # action = int(action.numpy()[0][0])
+        action = tf.cast(action,tf.int32)
+        
         #since we don't need the continuous action space, we don't need the log_policy function
         log_policy = self.log_pdf(logits,action) #and thus with this action derived, we can compute the log pdf
+        
+        #ensure it return a scalar when batch is 1
+        if tf.shape(action)[0]==1:
+            log_policy = tf.squeeze(log_policy,axis=0)
+            action = tf.squeeze(action,axis=0)
         
         return log_policy, action
     
@@ -140,11 +174,22 @@ class Actor:
         
     #     return log_policy_pdf
     
+    # @tf.function(reduce_retracing=True)
     def log_pdf(self,logits,action):
         logits = tf.convert_to_tensor(logits,tf.float32)
         action = tf.convert_to_tensor(action, tf.int32)
+        
+        logits = tf.ensure_shape(logits,(None,self.action_dim))
+        action = tf.ensure_shape(action,(None,))
+        
         if logits.shape.rank == 1:
-            logits = logits[None, :]
+            logits = tf.reshape(logits,(1,-1))
+        elif logits.shape.rank == 2 and logits.shape[-1] != self.action_dim:
+            logits = tf.reshape(logits,(-1,self.action_dim))
+            
+        if action.shape.rank == 0:
+            action = tf.reshape(action,(1,))
+            
         return self._log_pdf_fn(logits,action)
         
     #in specific, this is the function that computes the main formula
@@ -163,7 +208,7 @@ class Actor:
             logits,actions=self.get_action(states)
             log_new_policy=self.log_pdf(logits,actions)
             loss=self.compute_loss(log_old_policy,log_new_policy,actions,gaes)
-        grads=tape.gradients(loss,self.model.trainable_variables)
+        grads=tape.gradient(loss,self.model.trainable_variables)
         self.opt.apply_gradients(zip(grads,self.model.trainable_variables))
         return loss
     
@@ -349,7 +394,23 @@ class Agent:
                         #get the 4+1(the other one is the next_state => for backward purpose as known before)
                         actor_model=self.Agents[ith_agent][0]
                         log_old_policy,action=actor_model.get_action(state)
-                        next_state,reward,done,info=(self.env).step(ith_agent,action)
+                        
+                        # this below block is added to specifically address the action scalar problem(for tensorflow problem in webapp)
+                        try:
+                            action_scalar = int(action)
+                        except Exception:
+                            import numpy as np
+                            try:
+                                import tensorflow as tf
+                                if tf.is_tensor(action):
+                                    action_scalar = int(action.numpy().reshape(-1)[0])
+                                else:
+                                    action_scalar = int(np.asarray(action).reshape(-1)[0])
+                            except Exception:
+                                action_scalar = int(np.asarray(action).reshape(-1)[0])
+                        
+                        # next_state,reward,done,info=(self.env).step(ith_agent,action)
+                        next_state,reward,done,info=(self.env).step(ith_agent,action_scalar)
                         
                         #temporarily we put the render here
                         episode_time=self.env.time

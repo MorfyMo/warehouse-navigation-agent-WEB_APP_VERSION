@@ -15,7 +15,7 @@
 //     timerId: number|null;
 // };
 
-const GRACE_MS =2000;
+const GRACE_MS =3000;
 const MAX_BACKOFF_MS = 3000;
 
 class WSManager {
@@ -109,6 +109,8 @@ class WSManager {
             });
 
             ws.addEventListener("open",()=>{
+                try {ws.send(JSON.stringify({type:"ready"})); } catch {}
+                
                 const pingId = setInterval(()=>{
                     if(ws.readyState === WebSocket.OPEN){
                         try {ws.send(JSON.stringify({type: "ping", ts:Date.now()}));}
@@ -159,7 +161,7 @@ class WSManager {
             console.info("WS open", { url });
 
             // send "ready" signal to backend
-            // try {ws.send(JSON.stringify({type:"ready"})); } catch {}
+            try {ws.send(JSON.stringify({type:"ready"})); } catch {}
 
             // this.backoff.set(url, 500);
             // now we add the heartbeat (instead of adding heartbeat at api_Server side)
@@ -222,7 +224,7 @@ class WSManager {
             // const t = this.timers.get(url);
             // if(t){clearTimeout(t); this.timers.delete(url);}
             // this.backoff.delete(url);
-            if((this.refs.get(url)??0)==0){
+            if((this.refs.get(url) ?? 0) == 0){
                 const ws = this.sockets.get(url);
                 if(ws && ws.readyState !== WebSocket.CLOSED){
                     try{ws.close(1000,"no-subscribers");}catch{}

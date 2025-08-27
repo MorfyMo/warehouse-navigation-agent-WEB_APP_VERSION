@@ -118,7 +118,18 @@ class DQN:
         self.epsilon=args.eps
         if (model is  not None):
             self.nnmodel=model
-        self.nnmodel=None
+        else:
+            self.nnmodel = None
+            # directly built one model
+            self.nnmodel=self.nn_model()
+        
+        self._predict_fn = tf.function(
+            lambda x: self.nnmodel(x,training=False),
+            input_signature=[tf.TensorSpec(shape=[None,self.state_dim],dtype=tf.float32)],
+            reduce_retracing=True,
+        )
+        
+        # self.nnmodel=model
         self.prev_action=None
         self.avoid_action=None
         self.avoid_action_extend=None
@@ -144,9 +155,15 @@ class DQN:
                 Dense(self.action_dim)
             ])
             model.compile(loss="mse",optimizer=keras.optimizers.SGD((self.args).learning_rate))
-            return model
-        else:
-            return self.nnmodel
+            # the following tries to run the model once with a fake input(so that we can initialize the weights)
+            import tensorflow as tf
+            dummy = tf.zeros((1,self.state_dim),dtype=tf.float32)
+            _ = model(dummy,training=False)
+            self.nnmodel = model
+        return self.nnmodel
+        #     return model
+        # else:
+        #     return self.nnmodel
     
     def train(self,states,targets):
         self.nn_model().fit(states,targets,epochs=1)
@@ -154,15 +171,20 @@ class DQN:
     # def predict(self,state):
     #     return self.nn_model().predict(state)
     
-    @tf.function(reduce_retracing=True, input_signature=[tf.TensorSpec(shape=[None,None],dtype=tf.float32)])
-    def _predict_fn(self,state):
-        return self.nn_model()(state,training=False)
+    # @tf.function(reduce_retracing=True, input_signature=[tf.TensorSpec(shape=[None,...],dtype=tf.float32)])
+    # def _predict_fn(self,state):
+    #     # return self.nn_model()(state,training=False)
+    #     return self.nnmodel(state,training=False)
     
     def predict(self,state):
         state = np.asarray(state,dtype=np.float32)
         if state.ndim == 1:
             state = state.reshape(1,-1)
-        return self._predict_fin(state).numpy()
+        # return self._predict_fn(state).numpy()
+        
+        # self.nn_model()
+        x = tf.convert_to_tensor(state, dtype=tf.float32)
+        return self._predict_fn(x).numpy()
     
     #now this part implement the policy: e.g. \epsilon-greedy
     def get_action(self,state,bounce,carry,count_bounce):

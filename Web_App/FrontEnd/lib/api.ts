@@ -58,18 +58,23 @@ export const wsPaths = {
 };
 
 // to help centralized the behaviors, we add this fetch function
-type FetchOptions = RequestInit & {timeoutMs?: number};
+type FetchOptions = RequestInit & {timeoutMs?: number; signal?: AbortSignal};
 
 async function fetchJSON<T>(url: string, init: FetchOptions={}): Promise<T>{
-  const {timeoutMs, ...rest}=init;
+  const {timeoutMs, signal, ...rest}=init;
   const ctl = new AbortController();
+
+  const onAbort = () =>ctl.abort(signal?.reason ?? undefined);
+  if (signal) signal.addEventListener("abort", onAbort);
+
   const timer = timeoutMs ? setTimeout(()=>ctl.abort(), timeoutMs):null;
 
   try{
-    const response = await fetch(url,{...rest,signal:ctl.signal,cache: "no-store"});
+    const response = await fetch(url,{...rest, signal:ctl.signal, cache: "no-store"});
     if(!response.ok) throw new Error(`${response.status}${response.statusText}`);
     return response.json() as Promise<T>;
-  }finally{
+  } finally {
+    if(signal) signal.removeEventListener("abort", onAbort)
     if(timer) clearTimeout(timer);
   }
 }
@@ -79,6 +84,7 @@ export async function envInit(sessionId:string|null){
   const r = await fetch(`${API_BASE_URL}/api/env_init/${sessionId}`,{
     method: "GET",
     cache: "no-store",
+    // credentials: "include",
   });
   if(!r.ok) throw new Error(`env_init ${r.status}`);
   return r.json() as Promise<{is_ready:boolean}>
@@ -86,7 +92,7 @@ export async function envInit(sessionId:string|null){
 
 export async function waitForEnv(
   sessionId: string|null,
-  opts: {timeoutMs?: number; intervalMs?: number}={}
+  opts: {timeoutMs?: number; intervalMs?: number}={},
 ){
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const intervalMs = opts.intervalMs ?? 500;
@@ -123,6 +129,7 @@ export const api = {
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify(config),
         timeoutMs,
+        // credentials: "include",
       }
     );
   },
@@ -141,7 +148,7 @@ export const api = {
   //   if(!response.ok) throw new Error(await response.text());
   //   return response.json()
   // },
-    return fetchJSON<{success:boolean;session_id:string}>(
+    return fetchJSON<{ success:boolean; session_id:string}>(
       `${API_BASE_URL}/api/training/stop/${sessionId}`,
       {
         method:"POST",
@@ -149,6 +156,8 @@ export const api = {
         body: JSON.stringify({ session_id: sessionId }),
         keepalive: true,
         timeoutMs,
+        signal: opts?.signal,
+        // credentials: "include",
       }
     )
   },

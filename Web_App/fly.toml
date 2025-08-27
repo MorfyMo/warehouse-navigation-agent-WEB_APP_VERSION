@@ -10,18 +10,27 @@ primary_region = 'ewr'
 
 [http_service]
   internal_port = 8080
+  protocol = "tcp"
   force_https = true
   auto_stop_machines = false
   auto_start_machines = true
   min_machines_running = 1
   processes = ['app']
 
+  [[http_service.ports]]
+    port = 80
+  [[http_service.ports]]
+    port = 443
+
 [http_service.checks]
   [http_service.checks.http]
+    type = "http"
     path = "/health"
     interval = "10s"
     timeout = "2s"
-
+    grace_period = "25s"
+    method = "GET"
+    port = 8080
 
 [[vm]]
   memory = '2gb'

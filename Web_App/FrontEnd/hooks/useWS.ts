@@ -39,7 +39,10 @@ export function useWS({ path, onMessage, throttleMs = 0, binaryType }: UseWSOpts
         if (binaryType) ws.binaryType = binaryType;
         wsRef.current = ws;
 
-        const handleOpen = () => setStatus("open");
+        const handleOpen = () => {
+            setStatus("open");
+            try {ws.send(JSON.stringify({type:"ready"})); } catch {}
+        };
         const handleClose = (evt: CloseEvent) => {
             console.warn("WS closed", {
             url,

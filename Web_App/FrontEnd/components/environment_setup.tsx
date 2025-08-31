@@ -9,7 +9,8 @@ import * as THREE from 'three';
 import WarehouseScene from './warehouse_scene';
 
 const isClient = typeof window !== "undefined";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
+// const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL
 // const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
 const NEXT_PUBLIC_WS_URL =process.env.NEXT_PUBLIC_WS_URL!
 
@@ -20,53 +21,59 @@ interface CanvasProps{
     sessionId: string
     isTraining: boolean
     dimension: string
-    // envReady: boolean
+    envReady: boolean
 }
 
 function validId(id: unknown): id is string{
     return typeof id==="string" && id!=="undefined" && id!== "null" && id.length>0
 }
 
-export default function CanvasWrapper({sessionId,isTraining,dimension}:CanvasProps) {
-    const [envinit,setEnvInit]=useState(false);
+export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}:CanvasProps) {
+    // const [envinit,setEnvInit]=useState(false);
     const [grid, setGrid] = useState<number[][]>([]);
 
-    useEffect(()=>{
-        if(!validId(sessionId)||!isTraining||dimension!=="3D") return;
+    // useEffect(()=>{
+    //     if(!validId(sessionId)||!isTraining||dimension!=="3D") return;
 
-        let alive = true;
-        const ctl = new AbortController();
+    //     let alive = true;
+    //     const ctl = new AbortController();
 
-        const checkEnvInit = async()=>{
-            try{
-                const response = await fetch(`${API_BASE_URL}/api/env_init/${sessionId}`, {
-                    cache: 'no-store',
-                    signal: ctl.signal,
-                    // credentials: "include",
-                });
-                const data = await response.json();
-                if(data.is_ready){
-                    setEnvInit(true);
-                    console.log("[env_init] is_ready ->", data.is_ready);
-                }
-            } catch (e: any){
-                if (e?.name !== 'AbortError')
-                console.log('env_init fetch error:',e);
-            }
-        };
+    //     const checkEnvInit = async()=>{
+    //         try{
+    //             const url = `${API_BASE_URL}/api/env_init/${sessionId}`;
+    //             const response = await fetch(url, {
+    //                 cache: 'no-store',
+    //                 signal: ctl.signal
+    //             })
+    //             if(!response.ok){
+    //                 console.warn("[env_init] not ok", response.status,url);
+    //                 return;
+    //             }
+    //             // the above block replaced the first block
+    //             const data = await response.json();
+    //             console.log("[env_init] poll",{url,is_ready: data?.is_ready})
+    //             if(data?.is_ready){
+    //                 setEnvInit(true);
+    //                 console.log("[env_init] is_ready ->", data.is_ready);
+    //             }
+    //         } catch (e: any){
+    //             if (e?.name !== 'AbortError')
+    //             console.log('[env_init] fetch error:',e);
+    //         }
+    //     };
 
-        checkEnvInit();
-        const id = window.setInterval(checkEnvInit, 1500);
-        // const id = window.setInterval(envReady, 1500);
+    //     checkEnvInit();
+    //     const id = window.setInterval(checkEnvInit, 1500);
+    //     // const id = window.setInterval(envReady, 1500);
 
-        return () => {
-            alive = false;
-            clearInterval(id);
-            ctl.abort();
-            // reset when deps change
-            setEnvInit(false);
-        };
-    },[sessionId,isTraining,dimension]);
+    //     return () => {
+    //         alive = false;
+    //         clearInterval(id);
+    //         ctl.abort();
+    //         // reset when deps change
+    //         // setEnvInit(false);
+    //     };
+    // },[sessionId,isTraining,dimension]);
 
     const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
     const ctxLostRef = useRef(false);
@@ -129,6 +136,7 @@ export default function CanvasWrapper({sessionId,isTraining,dimension}:CanvasPro
     const lastHashRef = useRef<string>('');
     const handleLayoutMsg = useCallback((event: MessageEvent)=>{
         if(typeof event.data !== 'string') return;
+
         let data: any;
         try{
             data = JSON.parse(event.data);
@@ -137,46 +145,86 @@ export default function CanvasWrapper({sessionId,isTraining,dimension}:CanvasPro
         }
 
         if (data.type === "ping"){
+            // Temporarily commented for useWS:
             layoutSendRef.current?.({type:"pong", ts: Date.now()});
             return;
         }
 
-        if(Array.isArray(data?.layout)){
-            // in this block we modify to avoid identical-frame updates
-            const rows = data.layout.length;
-            const cols = rows ? data.layout[0].length :0;
-            let h=0;
-            for(let r=0; r<rows;r++){
-                const row = data.layout[r] as number[];
-                for (let c = 0; c<cols; c++) h = (h*31+(row[c]|0))|0;
-            }
-            const nextHash = `${rows}x${cols}:${h}`;
-            if(nextHash !== lastHashRef.current){
-                lastHashRef.current = nextHash;
-                // originally we just sent and set the Grid in this way(which might cause duplicates)
+        // Temporarily COMMENT this below:
+        // if(Array.isArray(data?.layout)){
+        //     // in this block we modify to avoid identical-frame updates
+        //     const rows = data.layout.length;
+        //     const cols = rows ? data.layout[0].length :0;
+        //     let h=0;
+        //     for(let r=0; r<rows;r++){
+        //         const row = data.layout[r] as number[];
+        //         for (let c = 0; c<cols; c++) h = (h*31+(row[c]|0))|0;
+        //     }
+        //     const nextHash = `${rows}x${cols}:${h}`;
+        //     if(nextHash !== lastHashRef.current){
+        //         lastHashRef.current = nextHash;
+        //         // originally we just sent and set the Grid in this way(which might cause duplicates)
+        //         setGrid(data.layout);
+        //     }
+        // }
+        
+        if(data?.type === "render" &&
+            Array.isArray(data.layout) &&
+            data.layout.every((row:any) => Array.isArray(row))){
                 setGrid(data.layout);
             }
-        }
+        
     }, []);
 
-    const [layoutGate, setLayoutGate]= useState(false);
-    useEffect(()=>{
-        if(isTraining && envinit && dimension ==="3D"){
-            const t = setTimeout(() => setLayoutGate(true), 400);
-            return () => { clearTimeout(t); setLayoutGate(false); };
-        }
-    }, [envinit, isTraining, dimension]);
+    // const [layoutGate, setLayoutGate]= useState(false);
+    // useEffect(()=>{
+    //     if(isTraining && envinit && dimension ==="3D"){
+    //         const t = setTimeout(() => setLayoutGate(true), 400);
+    //         // return () => { clearTimeout(t); setLayoutGate(false); };
+    //         return () => { clearTimeout(t); };
+    //     }
+    // }, [envinit, isTraining, dimension]);
 
+    // V1:
+    // const layoutPath =
+    //     validId(sessionId) && layoutGate
+    //         // ?`/ws/layout/${sessionId}`
+    //         ? wsPaths.layout(sessionId)
+    //         : undefined;
+
+    // V2:
+    // const layoutPath = useMemo(()=>{
+    //     if(!validId(sessionId)) return undefined;
+    //     if(!isTraining || !envinit || dimension !== "3D") return undefined;
+    //     return wsPaths.layout(sessionId);
+    // }, [sessionId, isTraining, envinit, dimension]);
+
+    // V3:
     const layoutPath =
-        validId(sessionId) && layoutGate
-            // ?`/ws/layout/${sessionId}`
+        validId(sessionId) && isTraining && dimension==="3D" && envReady
             ? wsPaths.layout(sessionId)
             : undefined;
 
+    // console.log("[layout guard check]", {
+    // sessionId,
+    // isTraining,
+    // envReady,
+    // dimension,
+    // layoutPath,
+    // });
+
+    const sentReady = useRef(false);
+    // this below useWS block is temporarily commented to test whether it is useWS problem:
     const { status: layoutStatus, send: sendLayout } = useWS({
         path: layoutPath,
         onMessage: handleLayoutMsg,
         throttleMs: 100,
+        onOpen: () => {
+            if (!sentReady.current) {
+            sendLayout({ type: "ready" });
+            sentReady.current = true;
+            }
+        }
     })
 
     const layoutSendRef = useRef<typeof sendLayout | null>(null);
@@ -188,20 +236,20 @@ export default function CanvasWrapper({sessionId,isTraining,dimension}:CanvasPro
         };
     }, [sendLayout]);
 
-    useEffect(()=>{
-        if (!layoutPath){
-            sentReadyRef.current = false;
-            return;
-        }
-        if(layoutStatus === "open" && !sentReadyRef.current){
-            sendLayout({type:"ready"});
-            sentReadyRef.current = true;
-        }
-        console.log("[layout] path =", layoutPath, "status =", layoutStatus);
-    }, [layoutStatus, layoutPath, sendLayout]);
+    // useEffect(()=>{
+    //     if (!layoutPath){
+    //         sentReadyRef.current = false;
+    //         return;
+    //     }
+    //     if(layoutStatus === "open" && !sentReadyRef.current){
+    //         sendLayout({ type:"ready" });
+    //         sentReadyRef.current = true;
+    //     }
+    // }, [layoutStatus, layoutPath, sendLayout]);
 
+    // "gl={glFactory} onCreated={onCreated}" taken out
     return (
-    <Canvas gl={glFactory} onCreated={onCreated} camera={{ position: [0, 30, 0], fov: 30 }}>
+    <Canvas camera={{ position: [0, 30, 0], fov: 30 }}>
         <ambientLight intensity={2} />
         <pointLight position={[10, 10, 10]} />
 

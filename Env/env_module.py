@@ -1208,29 +1208,34 @@ class Environment(gym.Env):
             current_state_base64=self.Visual_View.render(self.plt,self.grid_state,mode,close,reward,count_time,delivered,ThreeD_vis,return64web,web_plt)
             return current_state_base64
         
-    async def stream_layout(self, websocket: WebSocket):
-        # await websocket.accept()
-        try:
-            # since we previously sent a message from the front end to backend - we should receive a message here
-            # msg = await websocket.receive_json()
-            # if msg.get("type") != "ready":
-            #     print("Invalid init message. Closing WebSocket.")
-            #     await websocket.close()
-            #     return
+    # async def stream_layout(self, websocket: WebSocket):
+    #     # await websocket.accept()
+    #     try:
+    #         # since we previously sent a message from the front end to backend - we should receive a message here
+    #         # msg = await websocket.receive_json()
+    #         # if msg.get("type") != "ready":
+    #         #     print("Invalid init message. Closing WebSocket.")
+    #         #     await websocket.close()
+    #         #     return
             
-            layout = self.grid_state.astype(int).tolist()  # Make sure this returns 2D list
-            # print("layout sent for 3D version:",layout)
+    #         layout = self.grid_state.astype(int).tolist()  # Make sure this returns 2D list
+    #         # print("layout sent for 3D version:",layout)
             
-            # CURRENTLY we just don't send from this end(COMMENTED it out):
-            # await websocket.send_json({"layout": layout})
+    #         # CURRENTLY we just don't send from this end(COMMENTED it out):
+    #         await websocket.send_json({"layout": layout})
             
-            # this below is to generate the plausible payload for 3d frame
-            payload = {"type":"render","layout":layout,"ts":time.time()}
-            return payload
-            # await asyncio.sleep(0.5)
-        except TypeError as e:
-            print(f"Layout stream error: {e}")
-        except WebSocketDisconnect:
-            print("Disconnected from layout_sream")
-        except Exception as e:
-            print(f"Layout stream error: {e}")
+    #         # this below is to generate the plausible payload for 3d frame
+    #         # payload = {"type":"render","layout":layout,"ts":time.time()}
+    #         # return payload
+    #         # await asyncio.sleep(0.5)
+    #     except TypeError as e:
+    #         print(f"Layout stream error: {e}")
+    #     except WebSocketDisconnect:
+    #         print("Disconnected from layout_sream")
+    #     except Exception as e:
+    #         print(f"Layout stream error: {e}")
+    def stream_layout(self) -> dict:
+        layout = self.grid_state.astype(int).tolist()
+        payload = {"type":"render","layout":layout,"ts":time.time()}
+        # print(layout)
+        return payload

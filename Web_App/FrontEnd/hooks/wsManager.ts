@@ -65,16 +65,16 @@ class WSManager {
                 // have the subscription
                 try{
                     if (url.includes("/ws/vis2d/")){
-                        ws.send(JSON.stringify({type:"subscribe",topic:"vis2d"}));
+                        ws.send(JSON.stringify({type:"subscribe",topic:"2d_subs"}));
                     }
                     else if (url.includes("/ws/plot/")){
-                        ws.send(JSON.stringify({type:"subscribe",topic:"plot"}));
+                        ws.send(JSON.stringify({type:"subscribe",topic:"2d_metrics_subs"}));
                     }
                     else if (url.includes("/ws/layout/")){
-                        ws.send(JSON.stringify({type:"subscribe",topic:"layout"}));
+                        ws.send(JSON.stringify({type:"subscribe",topic:"3d_subs"}));
                     }
                     else if(url.includes("/ws/plot3d/")){
-                        ws.send(JSON.stringify({type:"subscribe",topic:"plot3d"}));
+                        ws.send(JSON.stringify({type:"subscribe",topic:"3d_metrics_subs"}));
                     }
                     else if(url.includes("/ws/training/")){
                         ws.send(JSON.stringify({type:"subscribe",topic:"training"}));
@@ -99,6 +99,7 @@ class WSManager {
 
                 const refs = this.refs.get(url)??0;
                 const transient =
+                    evt.code === 1001 ||
                     evt.code === 1006 ||
                     evt.code === 1011 ||
                     evt.code === 1012 ||
@@ -110,7 +111,7 @@ class WSManager {
 
             ws.addEventListener("open",()=>{
                 try {ws.send(JSON.stringify({type:"ready"})); } catch {}
-                
+
                 const pingId = setInterval(()=>{
                     if(ws.readyState === WebSocket.OPEN){
                         try {ws.send(JSON.stringify({type: "ping", ts:Date.now()}));}
@@ -200,6 +201,7 @@ class WSManager {
             //     evt.code !== 1000 && evt.code !== 1001;
             const refs = this.refs.get(url)??0;
             const transient =
+                evt.code === 1001 ||
                 evt.code === 1006 ||
                 evt.code === 1011 ||
                 evt.code === 1012 ||

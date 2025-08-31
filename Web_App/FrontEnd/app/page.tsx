@@ -670,7 +670,7 @@ export default function RLShowcase() {
                       <WarehouseRender sessionId={sessionId} isTraining={isTraining} mode={selectedDimension} envReady={envReady}/>
                     )}
                   {sessionId && selectedDimension === "3D" &&(
-                      <WarehousePage sessionId={sessionId} isTraining={isTraining} dimension={selectedDimension} />
+                      <WarehousePage sessionId={sessionId} isTraining={isTraining} dimension={selectedDimension} envReady={envReady}/>
                     )
                   }
                 </CardContent>

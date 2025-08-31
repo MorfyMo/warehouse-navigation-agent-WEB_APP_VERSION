@@ -26,7 +26,6 @@ import argparse
 from datetime import datetime
 import random
 import numpy as np
-import gym
 import time
 from collections import deque
 import tensorflow as tf

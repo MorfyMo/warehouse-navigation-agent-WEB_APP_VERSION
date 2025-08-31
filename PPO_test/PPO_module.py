@@ -12,7 +12,7 @@ from tensorflow import keras # type: ignore
 from tensorflow.keras.layers import Input,InputLayer,Dense,Lambda # type: ignore
 from datetime import datetime
 import argparse
-import gym
+import gymnasium as gym # type: ignore
 import numpy as np
 sys.path.append(os.path.join(os.path.dirname(__file__),'..'))
 from PPO_test.Running_Stats import Running_Stats # type: ignore

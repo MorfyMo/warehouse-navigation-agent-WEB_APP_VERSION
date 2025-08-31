@@ -14,8 +14,9 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
+ENV PORT=3000
 EXPOSE 3000
 # either change your package.json start to "next start -p 8080"
 # or override args here:
-CMD ["npm","run","start","--","-p","3000"]
-# CMD ["npm","run","start"]
+# CMD ["npm","run","start","--","-p","3000"]
+CMD ["npm","run","start"]

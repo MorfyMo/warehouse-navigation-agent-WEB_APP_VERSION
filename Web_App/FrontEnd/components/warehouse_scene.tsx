@@ -31,6 +31,7 @@ const colors={
 }
 
 export default function WarehouseScene({ grid }: { grid: number[][] }) {
+    console.log("[WarehouseScene] Rendering with grid size:", grid.length, "x", grid[0]?.length);
     return (
     <group>
         {grid.map((row, z) =>

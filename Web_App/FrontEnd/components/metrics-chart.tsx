@@ -159,7 +159,8 @@ export function MetricsChart({ algorithm, isTraining, progress, sessionId, mode,
   const { status: plotStatus /*, send: sendPlot */ } = useWS({
     path: plotPath,
     onMessage: handlePlotMsg,
-    throttleMs: mode === "3D" ? 66 : 33, // ~15fps vs ~30fps
+    throttleMs: 16, // ~60fps for smooth metrics updates
+    // throttleMs: mode === "3D" ? 66 : 33, // ~15fps vs ~30fps
   });
 
   useEffect(() => {

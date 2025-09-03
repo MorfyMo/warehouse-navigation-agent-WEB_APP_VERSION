@@ -300,26 +300,36 @@ def _walk(prefix, routes):
         
 async def drain_queue_to_ws(websocket, send_lock: asyncio.Lock, q: "queue.Queue",*,poll_timeout_sec: float=1.0, drop_stale: bool = True):
     # consecutive_fails=0
+    log.info(f"[drain_queue_to_ws] Starting queue drain for queue: {q}")
     try:
         while websocket.application_state is WebSocketState.CONNECTED:
         # while ws_connected(websocket):
             try:
                 item = await asyncio.to_thread(q.get, True, poll_timeout_sec)
+                log.info(f"[drain_queue_to_ws] Retrieved item from queue: {type(item)}")
             except queue.Empty:
+                log.info("[drain_queue_to_ws] Queue is empty, continuing...")
                 continue
             except asyncio.TimeoutError:
+                log.info("[drain_queue_to_ws] Timeout waiting for queue item, continuing...")
                 continue
             
             if drop_stale:
                 try:
                     while True:
-                        item = q.get_nowait()
+                        q.get_nowait()  # Drop stale items, but keep the current item
                 except queue.Empty:
                     pass
             
+            log.info(f"[drain_queue_to_ws] Sending item: {type(item)} - {str(item)[:100]}...")
+            log.info(f"[drain_queue_to_ws] WebSocket state before send: {websocket.application_state}")
             ok = await safe_send(websocket, item, lock=send_lock)
             if not ok:
+                log.info("[drain_queue_to_ws] Failed to send item")
                 break
+            else:
+                log.info("[drain_queue_to_ws] Successfully sent item to WebSocket")
+                log.info(f"[drain_queue_to_ws] WebSocket state after send: {websocket.application_state}")
             #     consecutive_fails += 1
             #     if not ws_connected(websocket):
             #         break
@@ -335,7 +345,7 @@ async def drain_queue_to_ws(websocket, send_lock: asyncio.Lock, q: "queue.Queue"
     # except asyncio.CancelledError:
     #     pass
     except Exception as e:
-        print("[drain_queue_to_ws] exception:",repr(e))
+        log.info("[drain_queue_to_ws] exception:",repr(e))
         traceback.print_exc()
         try:
             await try_close(websocket,1000,"exception from drain_queue")
@@ -344,28 +354,54 @@ async def drain_queue_to_ws(websocket, send_lock: asyncio.Lock, q: "queue.Queue"
             
 # this function is intended to receive the heartbeat from frontend(ws routes)
 async def ws_receiver(ws: WebSocket, send_lock: asyncio.Lock, ready_event: asyncio.Event, session: dict, kind: str):
+    log.info(f"[ws_receiver] ENTRY: Starting receiver for {kind}")
+    unsubscribed = False
+    unsubscribed_topic = None
     try:
-        session["subs"][kind]=session["subs"].get(kind,0)+1
+        # Don't automatically increment subscriber count - wait for subscribe message
+        # session["subs"][kind]=session["subs"].get(kind,0)+1
+        log.info(f"[ws_receiver] Started receiver for {kind}")
         while ws.application_state is WebSocketState.CONNECTED:
             try:
+                log.info(f"[ws_receiver] Waiting for message from {kind}")
                 data=await ws.receive_text()
+                log.info(f"[ws_receiver] Received raw data from {kind}: {data}")
                 try:
                     msg = json.loads(data)
-                except Exception:
+                    log.info(f"[ws_receiver] Parsed message from {kind}: {msg}")
+                except Exception as e:
+                    log.info(f"[ws_receiver] Failed to parse message from {kind}: {e}")
                     # msg = {"type":"text","data":data}
                     continue
                     
                 t = msg.get("type") if isinstance(msg,dict) else None
+                log.info(f"[ws_receiver] Received message type: {t} for {kind}")
                 if t=="ping":
+                    # Handle ping messages (can be frequent, so don't log every one)
                     if send_lock is not None:
                         await safe_send(ws,{"type":"pong","ts":time.time()},lock=send_lock)
                     else:
                         await safe_send(ws,{"type":"pong","ts":time.time()})
                 elif t=="ready":
-                    ready_event.set()
+                    # Handle duplicate ready messages gracefully
+                    if not ready_event.is_set():
+                        ready_event.set()
+                        log.info(f"[ws_receiver] Ready event set for {kind}")
+                    else:
+                        log.info(f"[ws_receiver] Duplicate ready message received for {kind}, ignoring")
+                elif t=="subscribe":
+                    topic = msg.get("topic")
+                    if topic:
+                        session["subs"][topic] = session["subs"].get(topic, 0) + 1
+                        log.info(f"[ws_receiver] Incremented {topic} subscribers to {session['subs'][topic]}")
+                    else:
+                        log.info(f"[ws_receiver] Subscribe message missing topic: {msg}")
                 elif t=="unsubscribe":
-                    # topic = msg.get("topic")
-                    # session["subs"][topic]=max(0,session["subs"].get(topic,1)-1)
+                    topic = msg.get("topic")
+                    if topic in session["subs"]:
+                        session["subs"][topic]=session["subs"].get(topic,1)-1
+                    unsubscribed = True
+                    unsubscribed_topic = topic
                     break
                 elif t=="stop":
                     stop_helper(session)
@@ -381,9 +417,12 @@ async def ws_receiver(ws: WebSocket, send_lock: asyncio.Lock, ready_event: async
     except Exception:
         pass
     finally:
-        session["subs"][kind]=max(0,session["subs"].get(kind,1)-1)
-        # topic = msg.get("topic")
-        # session["subs"][topic]=max(0,session["subs"].get(topic,1)-1)
+        # Only decrement if we actually unsubscribed from a specific topic
+        if unsubscribed and unsubscribed_topic:
+            session["subs"][unsubscribed_topic]=max(0,session["subs"].get(unsubscribed_topic,1)-1)
+            log.info(f"[ws_receiver] Finally block: decremented {unsubscribed_topic} subscribers to {session['subs'][unsubscribed_topic]}")
+        else:
+            log.info(f"[ws_receiver] Finally block: no decrement needed (no unsubscribe message received)")
 
 log = logging.getLogger("uvicorn.error")
 # Unique marker for this build/process
@@ -422,6 +461,7 @@ async def start_training(config: TrainingConfig) -> TrainingResponse:
     try:
         # Generate session ID
         session_id = f"session_{int(time.time())}"
+        log.info(f"[TRAINING START] Created session: {session_id}")
         
         # Create environment based on config
         if config.environment == "warehouse":
@@ -681,6 +721,7 @@ async def try_close(ws: WebSocket, code: int=1000, reason:str=""):
 async def safe_send(ws: WebSocket, message, lock: asyncio.Lock | None = None, timeout: float = 0.25) -> bool:
     # Bail if not connected
     if not ws_connected(ws):
+        log.info("[safe_send] WebSocket not connected, returning False")
         return False
 
     async def _forward():
@@ -691,22 +732,26 @@ async def safe_send(ws: WebSocket, message, lock: asyncio.Lock | None = None, ti
             async with lock:
                 # Re-check inside the lock in case state changed
                 if not ws_connected(ws):
+                    log.info("[safe_send] WebSocket not connected inside lock, returning False")
                     return False
                 if timeout is None:
                     await _forward()
                 else:
                     await asyncio.wait_for(_forward(),timeout=timeout)
+                log.info("[safe_send] Successfully sent message with lock")
                 return True
         else:
             if timeout is None:
                 await _forward()
             else:
                 await asyncio.wait_for(_forward(), timeout=timeout)
+            log.info("[safe_send] Successfully sent message without lock")
             return True
     except WebSocketDisconnect:
+        log.info("[safe_send] WebSocket disconnected during send")
         return False
     except Exception as e:
-        print(f"[safe_send] Error sending message: {e}")
+        log.info(f"[safe_send] Error sending message: {e}")
         return False
 
 @app.on_event("startup")
@@ -714,6 +759,14 @@ async def show_routes():
     print("=== ROUTES AT STARTUP ===")
     _walk("", app.router.routes)
     print("=========================")
+    
+    # Debug: Log WebSocket routes specifically
+    log = logging.getLogger("uvicorn.error")
+    log.info("=== WEBSOCKET ROUTES ===")
+    for route in app.router.routes:
+        if hasattr(route, 'path') and '/ws/' in route.path:
+            log.info(f"WebSocket route: {route.path}")
+    log.info("========================")
 
 @app.websocket("/ws/layout/{session_id}")
 async def websocket_layout(websocket: WebSocket, session_id:str):
@@ -724,10 +777,19 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
     print("[WS ROUTE] Entered layout websocket route")
     print("[WS LAYOUT] entered", session_id, type(session_id).__name__)
     print("[WS ROUTE] layout attempt", session_id, "origin=", websocket.headers.get("origin"))
+    
+    # Debug: Log that the route is being called
+    log.info(f"[WS LAYOUT] Route called for session: {session_id}")
+    print(f"[WS LAYOUT] Route called for session: {session_id}")
+    
+    # Debug: Log all active sessions
+    log.info(f"[WS LAYOUT] Active sessions: {list(active_sessions.keys())}")
+    log.info(f"[WS LAYOUT] Requested session: {session_id}")
+    
     await websocket.accept()
     
     if session_id not in active_sessions:
-        log.info("[layout sessionid] no session id for layout route")
+        log.info(f"[layout sessionid] no session id for layout route. Available sessions: {list(active_sessions.keys())}")
         await try_close(websocket,1008,"3D layout but no session")
         return
     
@@ -743,7 +805,7 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
 
     # env & session & stop_flag check
     session = active_sessions.get(session_id)
-    for _ in range(70):
+    for _ in range(100):
         session = active_sessions.get(session_id)
         if not session:
             break
@@ -752,10 +814,6 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
         
         if environment is not None and stop_flag is not None and ("progress_log" in session):
             break
-        
-        # temporaily have this check
-        if _%10 == 0:
-            log.info("[Layout] session = %s, env=%s, stop_flag=%s progress", session, bool(environment is not None), bool(stop_flag is not None))
         
         await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
         await asyncio.sleep(0.1)
@@ -777,13 +835,17 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
         # await safe_send(websocket,{"type":"not ready"},lock=send_lock)
         return
     await safe_send(websocket, {"type":"ready"}, lock = send_lock)
+    log.info("[WS LAYOUT] Ready message sent, proceeding to create ws_receiver task")
     
     # send_lock = asyncio.Lock()
     
     # Temporarily we want to move this below block to the upper level[COMMENTED]
     ready_event = asyncio.Event()
+    log.info("[WS LAYOUT] Ready event created, about to create ws_receiver task")
     # this below line is to receive the heartbeat from the frontend(replace the heartbeat)
+    log.info("[WS LAYOUT] Creating ws_receiver task for 3d_subs")
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event, session, "3d_subs"))
+    log.info("[WS LAYOUT] ws_receiver task created")
     
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     try:
@@ -825,12 +887,32 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
         min_dt = 1.0/FPS
         last = 0.0
 
+        # Wait for subscribers before starting the main loop
+        log.info("[Layout WS] Waiting for 3d_subs subscribers...")
+        while websocket.application_state is WebSocketState.CONNECTED and session["subs"].get("3d_subs", 0) == 0:
+            await asyncio.sleep(0.1)
+        
+        if websocket.application_state is not WebSocketState.CONNECTED:
+            log.info("[Layout WS] WebSocket disconnected while waiting for subscribers")
+            return
+        
+        log.info(f"[Layout WS] Found {session['subs'].get('3d_subs', 0)} 3d_subs subscribers, starting main loop")
+        log.info(f"[Layout WS] Pre-loop check - WebSocket state: {websocket.application_state}, env.done: {env.done}, stop_flag: {stop_flag()}")
+        log.info(f"[Layout WS] Pre-loop check - Session subs: {session['subs']}")
+
         # Main loop: stream layout until training is done
+        loop_count = 0
+        last_layout_hash = None
+        log.info(f"[Layout WS] About to start main loop - WebSocket state: {websocket.application_state}, env.done: {env.done}, stop_flag: {stop_flag()}")
+        
         while websocket.application_state is WebSocketState.CONNECTED and not env.done and not stop_flag():
             try:
-                print("[Layout WS] Sending layout...")
-                log.info("[layout sent]layout sent = %s",frame_q.queue[0] if not frame_q.empty() else None)
-                # layout_3d=await env.stream_layout(websocket)
+                loop_count += 1
+                log.info(f"[Layout WS] Loop iteration {loop_count} - Checking for layout changes...")
+                log.info(f"[Layout WS] WebSocket state: {websocket.application_state}, env.done: {env.done}, stop_flag: {stop_flag()}")
+                log.info(f"[Layout WS] Training status: {session.get('status', 'unknown')}")
+                log.info(f"[Layout WS] Episode: {session.get('progress_log', {}).get('episode', 'unknown')}")
+                log.info(f"[Layout WS] Delivered: {session.get('progress_log', {}).get('delivered', 'unknown')}")
                 
                 now = time.time()
                 if now - last < min_dt:
@@ -838,21 +920,39 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
                     continue
                 last = now
                 
+                # debugging line
+                log.info(f"[Layout WS] Checking subscribers: 3d_subs = {session['subs'].get('3d_subs', 0)}")
+                log.info(f"[Layout WS] Session subs: {session['subs']}")
                 # now we add this to our queue
                 if(session["subs"].get("3d_subs",0)>0):
                     layout_3d = env.stream_layout()
-                    # put_drop(frame_q,{"type":"render","layout":layout_3d,"ts":time.time()})
-                    put_drop(frame_q,layout_3d)
-                    print("[Layout WS] Layout sent.")
+                    
+                    # Create a hash of the layout to detect changes
+                    import hashlib
+                    layout_str = str(layout_3d.get('layout', []))
+                    current_layout_hash = hashlib.md5(layout_str.encode()).hexdigest()
+                    
+                    # Only send if layout has changed
+                    if current_layout_hash != last_layout_hash:
+                        log.info(f"[Layout WS] Layout changed! Hash: {current_layout_hash[:8]}...")
+                        log.info(f"[Layout WS] Generated layout data: {type(layout_3d)} - {str(layout_3d)[:100]}...")
+                        # Send the layout data in the correct format expected by frontend
+                        success = put_drop(frame_q, layout_3d)
+                        log.info(f"[Layout WS] Layout queued successfully: {success}")
+                        log.info(f"[Layout WS] Frame queue size: {frame_q.qsize()}")
+                        last_layout_hash = current_layout_hash
+                    else:
+                        log.info(f"[Layout WS] Layout unchanged, skipping send. Hash: {current_layout_hash[:8]}...")
                 else:
+                    log.info(f"[Layout WS] No 3d_subs subscribers: {session['subs'].get('3d_subs', 0)}")
                     # Adjust speed if needed
                     await asyncio.sleep(0.2)
             except WebSocketDisconnect:
-                print("Client disconnected (image update)")
+                log.info("Client disconnected (image update)")
                 log.info("[layout disconnected]")
                 break
             except Exception as e:
-                print(f"Render/WebSocket error: {e}")
+                log.info(f"Render/WebSocket error: {e}")
                 log.info("[layout render/websocket error]")
                 try:
                     await safe_send(websocket,{"error": str(e)},lock=send_lock)
@@ -861,6 +961,10 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
                     print("Client disconnected during error handling")
                     break
             await asyncio.sleep(0.5)
+        
+        # Log why the loop exited
+        log.info(f"[Layout WS] Loop exited after {loop_count} iterations")
+        log.info(f"[Layout WS] Exit reason - WebSocket state: {websocket.application_state}, env.done: {env.done}, stop_flag: {stop_flag()}")
         log.info("[layout close] normal close")
         await try_close(websocket,1000,"normal close for 3d layout")
         return
@@ -939,12 +1043,15 @@ async def metrics3d(websocket: WebSocket, session_id:str):
         return
     
     # this line is intended to check whether the sending thing works here
-    print("[BACKEND] WebSocket accepted")
+    log.info("[BACKEND] WebSocket accepted")
 
     # Temporarily we want to move the below block to upper level[COMMENTED]
     ready_event = asyncio.Event()
+    log.info("[WS PLOT3D] Ready event created, about to create ws_receiver task")
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
+    log.info("[WS PLOT3D] Creating ws_receiver task for 3d_metrics_subs")
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock,ready_event,session,"3d_metrics_subs"))
+    log.info("[WS PLOT3D] ws_receiver task created")
     
     await safe_send(websocket, {"type": "ready", "session_id": session_id}, lock=send_lock)
     try:
@@ -1362,11 +1469,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     # await safe_send(websocket, {"type": "hello", "session_id": session_id},lock=send_lock)
     send_lock = asyncio.Lock()
     ready_event = asyncio.Event()
+    log.info("[WS TRAINING] Ready event created, about to create tasks")
     
     # heartbeat
     progress_q: "queue.Queue" = session.get("progress_q")
     sender_task = asyncio.create_task(drain_queue_to_ws(websocket, send_lock, progress_q))
+    log.info("[WS TRAINING] Sender task created, creating ws_receiver task for training")
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event, session,"training"))
+    log.info("[WS TRAINING] ws_receiver task created")
     try:
         # try:
         #     await asyncio.wait_for(ready_event.wait(),timeout=8.0)

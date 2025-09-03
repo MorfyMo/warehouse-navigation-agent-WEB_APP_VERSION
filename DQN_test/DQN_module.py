@@ -409,6 +409,11 @@ class Agent:
                         bounce_count=info["count_bounce"]
                         carry=info["in_progress"]
                         
+                        # Debug: Log step information
+                        print(f"[TRAINING DEBUG] Agent {i} step - action: {actions}, reward: {reward}, done: {done}")
+                        print(f"[TRAINING DEBUG] Agent {i} position: {self.env.agent_state[i] if i < len(self.env.agent_state) else 'N/A'}")
+                        print(f"[TRAINING DEBUG] Environment count_done: {self.env.count_done}, time: {self.env.time}")
+                        
                         #store the experience into the replay_buffer
                         replay_buffer_i.store(observations,actions,reward,next_observation,done)
                         

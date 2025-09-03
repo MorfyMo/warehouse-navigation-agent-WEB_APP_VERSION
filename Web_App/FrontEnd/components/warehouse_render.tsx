@@ -56,7 +56,7 @@ export function WarehouseRender({ sessionId, isTraining, mode, envReady}: Wareho
     const {status: plotStatus, send: sendPlot } = useWS({
         path: plotPath,
         onMessage: handlePlotMsg,
-        throttleMs: 250,
+        throttleMs: 16, // ~60fps for smoother visualization
     });
 
     const plotSendRef = useRef<typeof sendPlot | null>(null);

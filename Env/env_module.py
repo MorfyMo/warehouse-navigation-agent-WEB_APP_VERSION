@@ -1237,5 +1237,10 @@ class Environment(gym.Env):
     def stream_layout(self) -> dict:
         layout = self.grid_state.astype(int).tolist()
         payload = {"type":"render","layout":layout,"ts":time.time()}
-        # print(layout)
+        
+        # Debug: Log some information about the current state
+        print(f"[ENV DEBUG] stream_layout called - done: {self.done}, count_done: {self.count_done}, time: {self.time}")
+        print(f"[ENV DEBUG] Agent positions: {self.agent_state}")
+        print(f"[ENV DEBUG] Package positions: {self.package_state}")
+        
         return payload

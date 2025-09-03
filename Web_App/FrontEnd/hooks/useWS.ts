@@ -90,35 +90,47 @@ export function useWS({ path, onMessage, throttleMs = 0, onOpen }: UseWSOpts) {
         };
 
     const handleMessage = (evt: MessageEvent) => {
+        console.log("WS message received in useWS hook", { url, data: evt.data, hasHandler: !!onMessageRef.current });
         if (!onMessageRef.current) return;
         if (throttleMs > 0) {
             const now = performance.now();
-            if (now - lastRef.current < throttleMs) return;
+            if (now - lastRef.current < throttleMs) {
+                console.log("WS message throttled", { url, throttleMs, timeSinceLast: now - lastRef.current });
+                return;
+            }
             lastRef.current = now;
         }
+        console.log("WS message passed to handler", { url });
         onMessageRef.current(evt);
     };
 
     setStatus(ws.readyState === WebSocket.OPEN ? "open":"connecting");
 
-    ws.addEventListener("open", handleOpen);
-    ws.addEventListener("close", handleClose);
-    ws.addEventListener("error", handleError);
+    // COMMENTED OUT: These event listeners conflict with WebSocket manager
+    // ws.addEventListener("open", handleOpen);
+    // ws.addEventListener("close", handleClose);
+    // ws.addEventListener("error", handleError);
+    
+    // Only keep message listener - other events are handled by WebSocket manager
     ws.addEventListener("message", handleMessage);
+    console.log("WS message listener attached", { url, readyState: ws.readyState });
 
     // try {ws.send(JSON.stringify({type:"ready"})); } catch {}
 
         return () => {
-        ws.removeEventListener("open", handleOpen);
-        ws.removeEventListener("close", handleClose);
-        ws.removeEventListener("error", handleError);
+        // COMMENTED OUT: These event listener removals are no longer needed
+        // ws.removeEventListener("open", handleOpen);
+        // ws.removeEventListener("close", handleClose);
+        // ws.removeEventListener("error", handleError);
+        
+        // Only remove message listener - other events are handled by WebSocket manager
         ws.removeEventListener("message", handleMessage);
+        
         // this condition is added so that we don't kill CONNECTING sockets
         if( ws.readyState !== WebSocket.CONNECTING){
             wsManager.release(url);
             wsRef.current = null;
         }
-
         };
     }, [url, throttleMs, onMessage, onOpen]);
     // }, [url, throttleMs, binaryType, onMessage, onOpen]);

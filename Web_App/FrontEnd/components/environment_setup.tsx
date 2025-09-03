@@ -135,12 +135,18 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
 
     const lastHashRef = useRef<string>('');
     const handleLayoutMsg = useCallback((event: MessageEvent)=>{
+        console.log("[3D] Received WebSocket message:", event.data);
+        console.log("[3D] WebSocket connection state:", layoutSendRef.current ? "connected" : "disconnected");
         if(typeof event.data !== 'string') return;
 
         let data: any;
         try{
             data = JSON.parse(event.data);
+            console.log("[3D received layout data at the frontend] data =", data);
+            console.log("[3D received layout data at the frontend] data.type =", data.type);
+            console.log("[3D received layout data at the frontend] data.layout =", data.layout);
         } catch {
+            console.log("[3D] Failed to parse WebSocket message:", event.data);
             return;
         }
 
@@ -168,11 +174,26 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
         //     }
         // }
         
-        if(data?.type === "render" &&
-            Array.isArray(data.layout) &&
-            data.layout.every((row:any) => Array.isArray(row))){
-                setGrid(data.layout);
-            }
+        // V1: set Grid function
+        // if(data?.type === "render" &&
+        //     Array.isArray(data.layout) &&
+        //     data.layout.every((row:any) => Array.isArray(row))){
+        //         setGrid(data.layout);
+        //     }
+
+        // V2: the suggested version
+        if (data?.type === "render" && Array.isArray(data.layout)){
+            console.log("[3D] Setting grid with render data:", data.layout);
+            console.log("[3D] Layout dimensions:", data.layout.length, "x", data.layout[0]?.length);
+            setGrid(data.layout);
+        } else if (Array.isArray(data?.layout)){
+            console.log("[3D] Setting grid with layout data:", data.layout);
+            console.log("[3D] Layout dimensions:", data.layout.length, "x", data.layout[0]?.length);
+            setGrid(data.layout);
+        } else {
+            console.log("[3D] No layout data to process, data.type =", data.type, "data.layout =", data.layout);
+            console.log("[3D] WebSocket connection state:", layoutSendRef.current ? "connected" : "disconnected");
+        }
         
     }, []);
 
@@ -205,26 +226,30 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
             ? wsPaths.layout(sessionId)
             : undefined;
 
-    // console.log("[layout guard check]", {
-    // sessionId,
-    // isTraining,
-    // envReady,
-    // dimension,
-    // layoutPath,
-    // });
+    console.log("[layout guard check]", {
+        sessionId,
+        isTraining,
+        envReady,
+        dimension,
+        layoutPath,
+    });
 
     const sentReady = useRef(false);
     // this below useWS block is temporarily commented to test whether it is useWS problem:
     const { status: layoutStatus, send: sendLayout } = useWS({
         path: layoutPath,
         onMessage: handleLayoutMsg,
-        throttleMs: 100,
+        throttleMs: 16, // ~60fps instead of 10fps
         onOpen: () => {
-            if (!sentReady.current) {
-            sendLayout({ type: "ready" });
-            sentReady.current = true;
-            }
-        }
+            console.log("[3D] Layout WebSocket opened, status:", layoutStatus);
+        },
+        // onOpen: () => {
+        //     if (!sentReady.current) {
+        //     sendLayout({ type: "ready" });
+        //     sentReady.current = true;
+        //     }
+        // }
+        // COMMENTED because "ready" is already handled in useWS
     })
 
     const layoutSendRef = useRef<typeof sendLayout | null>(null);
@@ -235,6 +260,11 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
             layoutSendRef.current = null;
         };
     }, [sendLayout]);
+
+    // Debug WebSocket status
+    useEffect(() => {
+        console.log("[3D] Layout WebSocket status changed:", layoutStatus);
+    }, [layoutStatus]);
 
     // useEffect(()=>{
     //     if (!layoutPath){
@@ -250,7 +280,7 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
     // "gl={glFactory} onCreated={onCreated}" taken out
     return (
     <Canvas camera={{ position: [0, 30, 0], fov: 30 }}>
-        <ambientLight intensity={2} />
+        <ambientLight intensity={1.5} />
         <pointLight position={[10, 10, 10]} />
 
         {grid.length>0&&(<WarehouseScene grid={grid} />)}

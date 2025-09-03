@@ -174,13 +174,13 @@ export default function RLShowcase() {
   const { status: trainStatus, send: sendTrain } = useWS({
     path: trainPath,
     onMessage: handleTrainMsg,
-    throttleMs: 100,
+    throttleMs: 16, // ~60fps for real-time training updates
   });
 
   const { status: plotStatus, send: sendPlot } = useWS({
     path: plotPath,
     onMessage: handlePlotMsg,
-    throttleMs: selectedDimension === "3D" ? 66 : 33, // ~15fps vs ~30fps
+    throttleMs: 16, // ~60fps for smooth visualization
     // binaryType: "arraybuffer", // enable later if you switch to binary frames
   });
 

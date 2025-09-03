@@ -412,6 +412,11 @@ class Agent:
                         # next_state,reward,done,info=(self.env).step(ith_agent,action)
                         next_state,reward,done,info=(self.env).step(ith_agent,action_scalar)
                         
+                        # Debug: Log step information
+                        print(f"[PPO TRAINING DEBUG] Agent {ith_agent} step - action: {action_scalar}, reward: {reward}, done: {done}")
+                        print(f"[PPO TRAINING DEBUG] Agent {ith_agent} position: {self.env.agent_state[ith_agent] if ith_agent < len(self.env.agent_state) else 'N/A'}")
+                        print(f"[PPO TRAINING DEBUG] Environment count_done: {self.env.count_done}, time: {self.env.time}")
+                        
                         #temporarily we put the render here
                         episode_time=self.env.time
                         if(not self.return4web):

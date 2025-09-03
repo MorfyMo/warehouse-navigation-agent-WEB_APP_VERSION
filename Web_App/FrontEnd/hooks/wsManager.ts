@@ -49,37 +49,49 @@ class WSManager {
                 console.info("WS open (reconnect)", { url });
 
                 // send the "ready" signal to backend
-                try {ws.send(JSON.stringify({type:"ready"}));} catch {}
+                try {
+                    ws.send(JSON.stringify({type:"ready"}));
+                    console.log("WS sent ready message (reconnect)", { url });
+                } catch (e) {
+                    console.error("WS failed to send ready (reconnect)", { url, error: e });
+                }
 
                 this.backoff.set(url, 500); // reset backoff on success
 
-                // // now we add the heartbeat into the function(since we removed the previous heartbeat in api_Server)
-                // const pingId = setInterval(()=>{
-                //     if(ws.readyState === WebSocket.OPEN){
-                //         try {ws.send(JSON.stringify({type: "ping", ts:Date.now()}));}
-                //         catch{}
-                //     }
-                // },15000);
-                // this.pingTimers.set(url,pingId as unknown as number);
+                // Start heartbeat ping timer
+                const pingId = setInterval(()=>{
+                    if(ws.readyState === WebSocket.OPEN){
+                        try {ws.send(JSON.stringify({type: "ping", ts:Date.now()}));}
+                        catch{}
+                    }
+                },15000);
+                this.pingTimers.set(url,pingId as unknown as number);
 
                 // have the subscription
                 try{
                     if (url.includes("/ws/vis2d/")){
                         ws.send(JSON.stringify({type:"subscribe",topic:"2d_subs"}));
+                        console.log("WS sent subscribe message (reconnect)", { url, topic: "2d_subs" });
                     }
                     else if (url.includes("/ws/plot/")){
                         ws.send(JSON.stringify({type:"subscribe",topic:"2d_metrics_subs"}));
+                        console.log("WS sent subscribe message (reconnect)", { url, topic: "2d_metrics_subs" });
                     }
                     else if (url.includes("/ws/layout/")){
                         ws.send(JSON.stringify({type:"subscribe",topic:"3d_subs"}));
+                        console.log("WS sent subscribe message (reconnect)", { url, topic: "3d_subs" });
                     }
                     else if(url.includes("/ws/plot3d/")){
                         ws.send(JSON.stringify({type:"subscribe",topic:"3d_metrics_subs"}));
+                        console.log("WS sent subscribe message (reconnect)", { url, topic: "3d_metrics_subs" });
                     }
                     else if(url.includes("/ws/training/")){
                         ws.send(JSON.stringify({type:"subscribe",topic:"training"}));
+                        console.log("WS sent subscribe message (reconnect)", { url, topic: "training" });
                     }
-                } catch {}
+                } catch (e) {
+                    console.error("WS failed to send subscribe (reconnect)", { url, error: e });
+                }
             });
 
             ws.addEventListener("error", (e) => {
@@ -88,14 +100,15 @@ class WSManager {
 
             ws.addEventListener("close", (evt) => {
                 console.warn("WS closed (reconnect)", { url, code: evt.code, reason: evt.reason, wasClean: evt.wasClean });
+                
+                // Clean up ping timer
+                const pingId = this.pingTimers.get(url);
+                if(pingId){
+                    clearInterval(pingId);
+                    this.pingTimers.delete(url);
+                }
+                
                 this.sockets.delete(url);
-
-                // const pingId = this.pingTimers.get(url);
-                // if(pingId){
-                //     clearInterval(pingId);
-                //     this.pingTimers.delete(url);
-                // }
-                // this.sockets.delete(url);
 
                 const refs = this.refs.get(url)??0;
                 const transient =
@@ -109,25 +122,26 @@ class WSManager {
                 if(refs>0 && transient) this.scheduleReconnect(url); // try again if still referenced
             });
 
-            ws.addEventListener("open",()=>{
-                try {ws.send(JSON.stringify({type:"ready"})); } catch {}
+            // COMMENTED OUT: Duplicate event listeners - already handled above
+            // ws.addEventListener("open",()=>{
+            //     try {ws.send(JSON.stringify({type:"ready"})); } catch {}
 
-                const pingId = setInterval(()=>{
-                    if(ws.readyState === WebSocket.OPEN){
-                        try {ws.send(JSON.stringify({type: "ping", ts:Date.now()}));}
-                        catch{}
-                    }
-                },15000);
-                this.pingTimers.set(url,pingId as unknown as number);
-            });
+            //     const pingId = setInterval(()=>{
+            //         if(ws.readyState === WebSocket.OPEN){
+            //             try {ws.send(JSON.stringify({type: "ping", ts:Date.now()}));}
+            //             catch{}
+            //         }
+            //     },15000);
+            //     this.pingTimers.set(url,pingId as unknown as number);
+            // });
 
-            ws.addEventListener("close",()=>{
-                const pingId = this.pingTimers.get(url);
-                if(pingId){
-                    clearInterval(pingId);
-                    this.pingTimers.delete(url);
-                }
-            })
+            // ws.addEventListener("close",()=>{
+            //     const pingId = this.pingTimers.get(url);
+            //     if(pingId){
+            //         clearInterval(pingId);
+            //         this.pingTimers.delete(url);
+            //     }
+            // })
         }
         }, cur);
         this.timers.set(url, id);
@@ -152,20 +166,34 @@ class WSManager {
             this.timers.delete(url);
         }
 
+        console.log("WS creating new WebSocket connection", { url });
         const ws = new WebSocket(url);
         ws.binaryType = "arraybuffer";
         this.sockets.set(url, ws);
         // this below line has already been covered by the first condition(initially)[thus COMMENTED for now]:
         this.refs.set(url, (this.refs.get(url) ?? 0) + 1);
+        console.log("WS WebSocket created, readyState:", ws.readyState, { url });
+        
+        // Add a timeout to detect if connection fails to open
+        const connectionTimeout = setTimeout(() => {
+            if (ws.readyState === WebSocket.CONNECTING) {
+                console.error("WS connection timeout - still connecting after 10 seconds", { url, readyState: ws.readyState });
+            }
+        }, 10000);
 
         ws.addEventListener("open", () => {
+            clearTimeout(connectionTimeout);
             console.info("WS open", { url });
 
             // send "ready" signal to backend
-            try {ws.send(JSON.stringify({type:"ready"})); } catch {}
+            try {
+                ws.send(JSON.stringify({type:"ready"}));
+                console.log("WS sent ready message", { url });
+            } catch (e) {
+                console.error("WS failed to send ready", { url, error: e });
+            }
 
-            // this.backoff.set(url, 500);
-            // now we add the heartbeat (instead of adding heartbeat at api_Server side)
+            // Start heartbeat ping timer
             const pingId = setInterval(()=>{
                 if(ws.readyState === WebSocket.OPEN){
                     try {ws.send(JSON.stringify({type:"ping",ts:Date.now()}))}
@@ -173,26 +201,53 @@ class WSManager {
                 }
             },15000);
             this.pingTimers.set(url,pingId as unknown as number);
+
+            // Send subscription message
+            try{
+                if (url.includes("/ws/vis2d/")){
+                    ws.send(JSON.stringify({type:"subscribe",topic:"2d_subs"}));
+                    console.log("WS sent subscribe message", { url, topic: "2d_subs" });
+                }
+                else if (url.includes("/ws/plot/")){
+                    ws.send(JSON.stringify({type:"subscribe",topic:"2d_metrics_subs"}));
+                    console.log("WS sent subscribe message", { url, topic: "2d_metrics_subs" });
+                }
+                else if (url.includes("/ws/layout/")){
+                    ws.send(JSON.stringify({type:"subscribe",topic:"3d_subs"}));
+                    console.log("WS sent subscribe message", { url, topic: "3d_subs" });
+                }
+                else if(url.includes("/ws/plot3d/")){
+                    ws.send(JSON.stringify({type:"subscribe",topic:"3d_metrics_subs"}));
+                    console.log("WS sent subscribe message", { url, topic: "3d_metrics_subs" });
+                }
+                else if(url.includes("/ws/training/")){
+                    ws.send(JSON.stringify({type:"subscribe",topic:"training"}));
+                    console.log("WS sent subscribe message", { url, topic: "training" });
+                }
+            } catch (e) {
+                console.error("WS failed to send subscribe", { url, error: e });
+            }
         });
 
         ws.addEventListener("error", (e) => {
-            console.error("WS error (manager)", { url, error: e });
+            console.error("WS error (manager)", { url, error: e, readyState: ws.readyState });
         });
 
         ws.addEventListener("close", (evt) => {
+            clearTimeout(connectionTimeout);
             console.warn("WS closed (manager)", {
                 url,
                 code: evt.code,
                 reason: evt.reason,
                 wasClean: evt.wasClean,
+                readyState: ws.readyState,
             });
-            // need to add the heartbeat cancel
+            // Clean up ping timer
             const pingId = this.pingTimers.get(url);
             if(pingId){
                 clearInterval(pingId);
-                // this.pingTimers.delete(url);
+                this.pingTimers.delete(url);
             }
-            this.pingTimers.delete(url);
             this.sockets.delete(url);
 
             // const shouldReconnect =

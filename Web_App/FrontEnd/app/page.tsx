@@ -973,12 +973,12 @@ export default function RLShowcase() {
           <p className="text-sm">
             GitHub:{' '}
             <a
-              href="https://github.com/MorfyMo/Warehouse-Navigation-Agent_MorfyMo"
+              href="https://github.com/MorfyMo/warehouse-navigation-agent-WEB_APP_VERSION"
               target="_blank"
               rel="noopener noreferrer"
               className="underline hover: text-gray-300 dark:text-gray-700"
             >
-              https://github.com/MorfyMo/Warehouse-Navigation-Agent_MorfyMo
+              https://github.com/MorfyMo/warehouse-navigation-agent-WEB_APP_VERSION
             </a>
           </p>
           

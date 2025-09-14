@@ -1,4 +1,4 @@
-# fly.toml app configuration file generated for warehouse-rl on 2025-08-09T15:58:46-04:00
+# fly.toml app configuration file for warehouse-rl-api
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
@@ -6,8 +6,8 @@
 app = 'warehouse-rl-api'
 primary_region = 'ewr'
 
-
 [build]
+  dockerfile = "Web_App/Dockerfile"
 
 [http_service]
   internal_port = 8080
@@ -23,15 +23,14 @@ primary_region = 'ewr'
   [[http_service.ports]]
     port = 443
 
-  [http_service.checks]
-    [http_service.checks.http]
-      type = "http"
-      path = "/health"
-      interval = "5s"
-      timeout = "2s"
-      grace_period = "25s"
-      method = "GET"
-      port = 8080
+  [[http_service.checks]]
+    type = "http"
+    path = "/api/health"
+    interval = "5s"
+    timeout = "2s"
+    grace_period = "25s"
+    method = "GET"
+    port = 8080
 
   [http_service.concurrency]
     type = "requests"
@@ -39,6 +38,6 @@ primary_region = 'ewr'
     soft_limit = 20
 
 [[vm]]
-  memory = '2gb'
+  memory = '4gb'
   cpu_kind = 'performance'
   cpus = 2

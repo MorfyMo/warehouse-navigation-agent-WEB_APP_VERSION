@@ -1,0 +1,34 @@
+# Exclude frontend directory only
+FrontEnd/
+
+# Exclude Node.js files from Web_App level (but keep parent RL modules)
+package.json
+package-lock.json
+node_modules/
+
+# Exclude logs and cache
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Exclude other unnecessary files
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesis

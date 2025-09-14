@@ -50,8 +50,8 @@ import { useCallback, useEffect, useRef, useState } from "react"
   //   normalized_reward: 0.0,
   //   time: "0.0s",
   // };
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"
-const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL ?? "wss://warehouse-rl-api.fly.dev"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://api.rl-navigation.com"
+const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL ?? "wss://api.rl-navigation.com"
 
 export const dynamic = 'force-dynamic'; // disables static optimization
 // export const revalidate = 0;
@@ -89,7 +89,7 @@ export default function RLShowcase() {
   // const [wsConnection, setWsConnection] = useState<TrainingWebSocket | null>(null)
   const { theme } = useTheme()
 
-
+  // console.log("[ENTER PAGE COMPONENT] sessionId:", sessionId)
   // Avoid hydration mismatch by only rendering theme-dependent elements after mount
   useEffect(() => {
     setMounted(true)
@@ -150,6 +150,7 @@ export default function RLShowcase() {
   }, [setDqnData, setPpoData]);
 
   const handleTrainMsg = useCallback((evt: MessageEvent) => {
+    console.log("[TRAINING DEBUG] handleTrainMsg called")
     if (typeof evt.data !== "string") return;
     let data: any; try { data = JSON.parse(evt.data) } catch { return; }
 
@@ -163,6 +164,9 @@ export default function RLShowcase() {
     }
   }, []);
 
+  // just see if we ever have the training websocket connected
+  console.log("[TRAINING DEBUG] isTraining:", isTraining, "sessionId:", sessionId)
+
   const trainPath = validId(sessionId) && isTraining
     ? wsPaths.training(sessionId) : undefined;
 
@@ -175,6 +179,15 @@ export default function RLShowcase() {
     path: trainPath,
     onMessage: handleTrainMsg,
     throttleMs: 16, // ~60fps for real-time training updates
+  });
+
+  // check if the training WebSocket is working
+  console.log("[TRAINING DEBUG] Training WebSocket conditions:", {
+    sessionId,
+    isTraining,
+    validIdResult: validId(sessionId),
+    trainPath,
+    trainStatus
   });
 
   const { status: plotStatus, send: sendPlot } = useWS({
@@ -310,6 +323,7 @@ export default function RLShowcase() {
   }
 
   const handleStartTraining = async () => {
+    console.log("[TRAINING DEBUG] handleStartTraining called")
     // this condition ensures that we are not double triggering the start training button
     if(isTraining || isStarting) return;
     setIsStarting(true);
@@ -329,6 +343,10 @@ export default function RLShowcase() {
       }
 
       const result = await api.startTraining(config)
+      console.log("[API TRAINING DEBUG] startTraining result:", result)
+      console.log("[API TRAINING DEBUG] startTraining result.success:", result.success)
+      console.log("[APITRAINING DEBUG] startTraining result.session_id:", result.session_id)
+
       const algo=config.algorithm
       setTrainingAlgo(algo)
 
@@ -673,6 +691,60 @@ export default function RLShowcase() {
                       <WarehousePage sessionId={sessionId} isTraining={isTraining} dimension={selectedDimension} envReady={envReady}/>
                     )
                   }
+                  {/* Placeholder for when training starts but visualization isn't ready */}
+                  {isTraining && !sessionId && (
+                    <div className="flex items-center justify-center h-[400px] border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg">
+                      <div className="text-center space-y-4">
+                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
+                        <div className="space-y-2">
+                          <p className="text-lg font-medium text-gray-700 dark:text-gray-300">
+                            Initializing Training Environment...
+                          </p>
+                          <p className="text-sm text-gray-500 dark:text-gray-400">
+                            Setting up the {selectedDimension} visualization
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* Placeholder for when session exists but env isn't ready */}
+                  {isTraining && sessionId && !envReady && (
+                    <div className="flex items-center justify-center h-[400px] border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg">
+                      <div className="text-center space-y-4">
+                        <div className="animate-pulse flex space-x-4 justify-center">
+                          <div className="rounded-full bg-blue-500 h-3 w-3"></div>
+                          <div className="rounded-full bg-blue-500 h-3 w-3"></div>
+                          <div className="rounded-full bg-blue-500 h-3 w-3"></div>
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-lg font-medium text-gray-700 dark:text-gray-300">
+                            Environment Loading...
+                          </p>
+                          <p className="text-sm text-gray-500 dark:text-gray-400">
+                            Preparing {selectedDimension} warehouse simulation
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* Default placeholder when not training */}
+                  {!isTraining && !sessionId && (
+                    <div className="flex items-center justify-center h-[400px] border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg">
+                      <div className="text-center space-y-4">
+                        <div className="mx-auto w-16 h-16 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center">
+                          <Warehouse className="w-8 h-8 text-gray-400" />
+                        </div>
+                        <div className="space-y-2">
+                          <p className="text-lg font-medium text-gray-700 dark:text-gray-300">
+                            Ready to Start Training
+                          </p>
+                          <p className="text-sm text-gray-500 dark:text-gray-400">
+                            Click "Start Training" to begin the {selectedAlgorithm} simulation
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>

@@ -7,3 +7,4 @@ numpy<2
 matplotlib==3.8.*
 tensorflow-cpu==2.15.*
 plotly==5.23.0
+psutil

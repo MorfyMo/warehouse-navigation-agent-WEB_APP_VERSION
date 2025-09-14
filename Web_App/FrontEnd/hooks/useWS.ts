@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { wsManager } from "./wsManager";
 
 type Status = "idle"|"connecting"|"open"|"closed"|"error";
@@ -26,10 +26,25 @@ export function useWS({ path, onMessage, throttleMs = 0, onOpen }: UseWSOpts) {
             // console.warn("WS skipped: no path");
             return undefined;
         }
-        const base = process.env.NEXT_PUBLIC_WS_URL ?? "wss://warehouse-rl-api.fly.dev";
+        const base = process.env.NEXT_PUBLIC_WS_URL ?? "wss://api.rl-navigation.com";
         console.log("WS connecting", { fullUrl:`${base}${path}` });
         return `${base}${path}`;
     }, [path]);
+
+    const handleMessage = useCallback((evt: MessageEvent) => {
+        console.log("WS message received in useWS hook", { url, data: evt.data, hasHandler: !!onMessageRef.current });
+        if (!onMessageRef.current) return;
+        if (throttleMs > 0) {
+            const now = performance.now();
+            if (now - lastRef.current < throttleMs) {
+                console.log("WS message throttled", { url, throttleMs, timeSinceLast: now - lastRef.current });
+                return;
+            }
+            lastRef.current = now;
+        }
+        console.log("WS message passed to handler", { url });
+        onMessageRef.current(evt);
+    }, [url, throttleMs]);
 
     // this block is added[test]
     // const queue = useRef<string[]>([]);
@@ -74,6 +89,7 @@ export function useWS({ path, onMessage, throttleMs = 0, onOpen }: UseWSOpts) {
             // try {ws.send(JSON.stringify({type:"ready"})); } catch {}
             // flush();
         };
+
         const handleClose = (evt: CloseEvent) => {
             console.warn("WS closed", {
             url,
@@ -89,50 +105,31 @@ export function useWS({ path, onMessage, throttleMs = 0, onOpen }: UseWSOpts) {
             setStatus("error")
         };
 
-    const handleMessage = (evt: MessageEvent) => {
-        console.log("WS message received in useWS hook", { url, data: evt.data, hasHandler: !!onMessageRef.current });
-        if (!onMessageRef.current) return;
-        if (throttleMs > 0) {
-            const now = performance.now();
-            if (now - lastRef.current < throttleMs) {
-                console.log("WS message throttled", { url, throttleMs, timeSinceLast: now - lastRef.current });
-                return;
-            }
-            lastRef.current = now;
-        }
-        console.log("WS message passed to handler", { url });
-        onMessageRef.current(evt);
-    };
+        // Add event listeners
+        ws.addEventListener("open", handleOpen);
+        ws.addEventListener("close", handleClose);
+        ws.addEventListener("error", handleError);
+        ws.addEventListener("message", handleMessage);
+        console.log("WS message listener attached", { url, readyState: ws.readyState });
 
-    setStatus(ws.readyState === WebSocket.OPEN ? "open":"connecting");
+        // Set initial status after listeners are attached
+        setStatus(ws.readyState === WebSocket.OPEN ? "open" : "connecting");
 
-    // COMMENTED OUT: These event listeners conflict with WebSocket manager
-    // ws.addEventListener("open", handleOpen);
-    // ws.addEventListener("close", handleClose);
-    // ws.addEventListener("error", handleError);
-    
-    // Only keep message listener - other events are handled by WebSocket manager
-    ws.addEventListener("message", handleMessage);
-    console.log("WS message listener attached", { url, readyState: ws.readyState });
-
-    // try {ws.send(JSON.stringify({type:"ready"})); } catch {}
-
-        return () => {
-        // COMMENTED OUT: These event listener removals are no longer needed
-        // ws.removeEventListener("open", handleOpen);
-        // ws.removeEventListener("close", handleClose);
-        // ws.removeEventListener("error", handleError);
-        
-        // Only remove message listener - other events are handled by WebSocket manager
+    return () => {
+        // Remove event listeners
+        ws.removeEventListener("open", handleOpen);
+        ws.removeEventListener("close", handleClose);
+        ws.removeEventListener("error", handleError);
         ws.removeEventListener("message", handleMessage);
         
-        // this condition is added so that we don't kill CONNECTING sockets
-        if( ws.readyState !== WebSocket.CONNECTING){
+        // Release WebSocket if not connecting
+        if (ws.readyState !== WebSocket.CONNECTING) {
             wsManager.release(url);
             wsRef.current = null;
         }
-        };
-    }, [url, throttleMs, onMessage, onOpen]);
+    };
+
+    }, [url, throttleMs, onOpen]);
     // }, [url, throttleMs, binaryType, onMessage, onOpen]);
 
   // convenience send helpers (auto-JSON for objects)[temporarily COMMENTED]

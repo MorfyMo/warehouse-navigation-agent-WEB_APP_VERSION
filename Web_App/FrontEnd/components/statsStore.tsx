@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect } from "react";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-// const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.rl-navigation.com"
+// const NEXT_PUBLIC_WS_URL="wss://api.rl-navigation.com"
 const NEXT_PUBLIC_WS_URL = process.env.NEXT_PUBLIC_WS_URL!
 
 export let lastStatsDqn={average_reward: 0.0, time: "0.0s"}

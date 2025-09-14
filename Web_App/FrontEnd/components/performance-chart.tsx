@@ -67,7 +67,7 @@ export function PerformanceChartDqn({algorithm, isTraining, sessionId, mode}: Pe
 
         if(algorithm!=="dqn") return;
 
-        const socket = new WebSocket(`ws://localhost:8000/ws/plot/${sessionId}`)
+        const socket = new WebSocket(`wss://api.rl-navigation.com/ws/plot/${sessionId}`)
 
         socket.onmessage = (event)=>{
             const data = JSON.parse(event.data);
@@ -160,7 +160,7 @@ export function PerformanceChartPpo({algorithm, isTraining, sessionId, mode}: Pe
 
         if(algorithm!=="ppo") return;
 
-        const socket = new WebSocket(`ws://localhost:8000/ws/plot/${sessionId}`)
+        const socket = new WebSocket(`wss://api.rl-navigation.com/ws/plot/${sessionId}`)
 
         socket.onmessage = (event)=>{
             const data = JSON.parse(event.data);
@@ -249,7 +249,7 @@ export function PerformanceChartDqn3d({algorithm, isTraining, sessionId, mode}: 
 
         if(algorithm!=="dqn") return;
 
-        const socket = new WebSocket(`ws://localhost:8000/ws/plot3d/${sessionId}`)
+        const socket = new WebSocket(`wss://api.rl-navigation.com/ws/plot3d/${sessionId}`)
 
         socket.onmessage = (event)=>{
             const data = JSON.parse(event.data);
@@ -339,7 +339,7 @@ export function PerformanceChartPpo3d({algorithm, isTraining, sessionId, mode}: 
 
         if(algorithm!=="ppo") return;
         
-        const socket = new WebSocket(`ws://localhost:8000/ws/plot3d/${sessionId}`)
+        const socket = new WebSocket(`wss://api.rl-navigation.com/ws/plot3d/${sessionId}`)
 
         socket.onmessage = (event)=>{
             const data = JSON.parse(event.data);

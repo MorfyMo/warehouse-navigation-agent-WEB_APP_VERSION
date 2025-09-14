@@ -11,7 +11,7 @@ import WarehouseScene from './warehouse_scene';
 const isClient = typeof window !== "undefined";
 // const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL
-// const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+// const NEXT_PUBLIC_WS_URL="wss://api.rl-navigation.com"
 const NEXT_PUBLIC_WS_URL =process.env.NEXT_PUBLIC_WS_URL!
 
 export const dynamic = 'force-dynamic'; // disables static optimization
@@ -153,6 +153,7 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
         if (data.type === "ping"){
             // Temporarily commented for useWS:
             layoutSendRef.current?.({type:"pong", ts: Date.now()});
+            console.log("[3D] Layout WebSocket sent pong message");
             return;
         }
 
@@ -182,11 +183,11 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
         //     }
 
         // V2: the suggested version
-        if (data?.type === "render" && Array.isArray(data.layout)){
+        if (data.type === "render" && Array.isArray(data.layout)){
             console.log("[3D] Setting grid with render data:", data.layout);
             console.log("[3D] Layout dimensions:", data.layout.length, "x", data.layout[0]?.length);
             setGrid(data.layout);
-        } else if (Array.isArray(data?.layout)){
+        } else if (Array.isArray(data.layout)){
             console.log("[3D] Setting grid with layout data:", data.layout);
             console.log("[3D] Layout dimensions:", data.layout.length, "x", data.layout[0]?.length);
             setGrid(data.layout);
@@ -242,14 +243,11 @@ export default function CanvasWrapper({sessionId,isTraining,dimension, envReady}
         throttleMs: 16, // ~60fps instead of 10fps
         onOpen: () => {
             console.log("[3D] Layout WebSocket opened, status:", layoutStatus);
-        },
-        // onOpen: () => {
-        //     if (!sentReady.current) {
-        //     sendLayout({ type: "ready" });
-        //     sentReady.current = true;
-        //     }
-        // }
-        // COMMENTED because "ready" is already handled in useWS
+            if (!sentReady.current) {
+                sendLayout({ type: "ready" });
+                sentReady.current = true;
+            }
+        }
     })
 
     const layoutSendRef = useRef<typeof sendLayout | null>(null);

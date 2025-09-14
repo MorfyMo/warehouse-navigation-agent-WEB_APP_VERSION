@@ -8,7 +8,7 @@ import { useWS } from "@/hooks/useWS";
 import { wsPaths } from "@/lib/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+// const NEXT_PUBLIC_WS_URL="wss://api.rl-navigation.com"
 const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL!
 
 interface WarehouseRenderProps {

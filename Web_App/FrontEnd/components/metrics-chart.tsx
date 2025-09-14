@@ -8,7 +8,7 @@ import { Download } from "lucide-react"
 import { useTheme } from "next-themes"
 import { useCallback, useEffect, useState } from "react"
 
-const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+const NEXT_PUBLIC_WS_URL="wss://api.rl-navigation.com"
 
 interface MetricsChartProps {
   algorithm: "dqn" | "ppo"

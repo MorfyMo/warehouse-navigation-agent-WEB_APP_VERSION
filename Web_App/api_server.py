@@ -85,8 +85,8 @@ frame_queues: dict[str, asyncio.Queue] = {}
 # MIN_PERIOD = 0.1 #10 Hz cap
 
 origins = [
-    "https://warehouse-rl.fly.dev", #the frontend link
-    "https://warehouse-rl-api.fly.dev",#the backend link
+    "https://rl-navigation.com", #the frontend link
+    "https://api.rl-navigation.com",#the backend link
     "http://localhost:3000", #the local host version
 ]
 
@@ -114,7 +114,82 @@ api = APIRouter(prefix="/api")
 
 @api.get("/health")
 def health():
-    return {"ok": True}
+    """Simple health check - should always respond quickly"""
+    try:
+        # Quick check without heavy operations
+        return {"ok": True, "timestamp": time.time()}
+    except Exception as e:
+        # Even if there's an error, try to return something
+        return {"ok": False, "error": str(e), "timestamp": time.time()}
+
+@api.get("/health/detailed")
+def health_detailed():
+    import psutil
+    import os
+    
+    try:
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        cpu_percent = process.cpu_percent()
+        
+        # Get session details
+        session_details = {}
+        total_websocket_connections = 0
+        for session_id, session in active_sessions.items():
+            # Count WebSocket connections
+            subs = session.get("subs", {})
+            ws_connections = sum(subs.values())
+            total_websocket_connections += ws_connections
+            
+            session_details[session_id] = {
+                "status": session.get("status", "unknown"),
+                "algorithm": session.get("config", {}).algorithm if session.get("config") else "unknown",
+                "has_thread": session.get("training_thread") is not None,
+                "thread_alive": session.get("training_thread").is_alive() if session.get("training_thread") else False,
+                "websocket_connections": ws_connections,
+                "subscribers": subs
+            }
+        
+        return {
+            "ok": True,
+            "memory_mb": round(memory_info.rss / 1024 / 1024, 2),
+            "memory_percent": round(psutil.virtual_memory().percent, 2),
+            "cpu_percent": round(cpu_percent, 2),
+            "active_sessions": len(active_sessions),
+            "total_websocket_connections": total_websocket_connections,
+            "session_details": session_details,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@api.post("/health/cleanup")
+def health_cleanup():
+    """Force garbage collection and memory cleanup"""
+    try:
+        import gc
+        import psutil
+        import os
+        
+        process = psutil.Process(os.getpid())
+        memory_before = process.memory_info().rss / 1024 / 1024
+        
+        # Force garbage collection
+        collected = gc.collect()
+        
+        memory_after = process.memory_info().rss / 1024 / 1024
+        memory_freed = memory_before - memory_after
+        
+        return {
+            "ok": True,
+            "memory_before_mb": round(memory_before, 2),
+            "memory_after_mb": round(memory_after, 2),
+            "memory_freed_mb": round(memory_freed, 2),
+            "objects_collected": collected,
+            "timestamp": time.time()
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 # app.include_router(api)
 # Store active training sessions
@@ -249,32 +324,48 @@ async def push_latest(session_id: str, payload: dict | bytes):
     await q.put(payload)
 
 # this function is design for asyncio queue to add new element to queue
-# (and maybe drop the oldest item if full)
-# def put_drop(q: "queue.Queue", item):
-#     while True:
+
+# def put_drop(q: "queue.Queue", item) -> bool:
+#     try:
+#         q.put_nowait(item)
+#         # print(f"[put_drop] Successfully added item to queue: {type(item)}")
+#         # log.info(f"[put_drop] Successfully added item to queue: {type(item)}")
+#         return True
+#     except queue.Full:
+#         # print(f"[put_drop] Queue is full, removing oldest item")
+#         # log.info(f"[put_drop] Queue is full, removing oldest item")
 #         try:
-#             q.put_nowait(item)
+#             q.get_nowait()     # drop oldest
+#             # print(f"[put_drop] Drop the oldest item")
+#             # log.info(f"[put_drop] Drop the oldest item")
+#         except queue.Empty:
+#             pass
+#         try:
+#             q.put_nowait(item) # try once more
+#             # print(f"[put_drop] Successfully added item after removing oldest: {type(item)}")
+#             # log.info(f"[put_drop] Successfully added item after removing oldest: {type(item)}")
+#             return True
 #         except queue.Full:
-#             try:
-#                 _ = q.get_nowait()
-#             except queue.Empty:
-#             # q.put_nowait(item)
-def put_drop(q: "queue.Queue", item) -> bool:
+#             # print(f"[put_drop] Failed to add item after removing oldest: {type(item)}")
+#             # log.info(f"[put_drop] Failed to add item after removing oldest: {type(item)}")
+#             return False
+        
+async def put_drop(q: asyncio.Queue, item) -> bool:
     try:
         q.put_nowait(item)
         return True
-    except queue.Full:
+    except asyncio.QueueFull:
         try:
             q.get_nowait()     # drop oldest
-        except queue.Empty:
+        except asyncio.QueueEmpty:
             pass
         try:
             q.put_nowait(item) # try once more
             return True
-        except queue.Full:
+        except asyncio.QueueFull:
             return False
         
-def stop_helper(session):
+def stop_helper(session, session_id=None):
     # Stop training thread if running
     if session.get("training_thread") and session["training_thread"].is_alive():
         session["stop_requested"] = True
@@ -287,6 +378,12 @@ def stop_helper(session):
             pass
     
     session["status"] = "stopped"
+    
+    # Clean up session from active_sessions if session_id provided
+    if session_id and session_id in active_sessions:
+        log.info(f"[CLEANUP] Removing session {session_id} from active_sessions")
+        del active_sessions[session_id]
+        log.info(f"[CLEANUP] Remaining active sessions: {len(active_sessions)}")
 
 def _walk(prefix, routes):
     for r in routes:
@@ -298,59 +395,89 @@ def _walk(prefix, routes):
         elif isinstance(r, Mount):
             _walk(prefix + r.path, r.routes)
         
-async def drain_queue_to_ws(websocket, send_lock: asyncio.Lock, q: "queue.Queue",*,poll_timeout_sec: float=1.0, drop_stale: bool = True):
+# previously use "queue.Queue"
+async def drain_queue_to_ws(websocket, send_lock: asyncio.Lock, q: asyncio.Queue,*,poll_timeout_sec: float=1.0, drop_stale: bool = True):
     # consecutive_fails=0
     log.info(f"[drain_queue_to_ws] Starting queue drain for queue: {q}")
+    log.info(f"[drain_queue_to_ws] Queue size: {q.qsize()}")
+    log.info(f"[drain_queue_to_ws] WebSocket state: {websocket.application_state}")
     try:
-        while websocket.application_state is WebSocketState.CONNECTED:
-        # while ws_connected(websocket):
+        # while websocket.application_state is WebSocketState.CONNECTED:
+        while ws_connected(websocket):
+            log.info(f"[drain_queue_to_ws] Loop iteration - Queue size: {q.qsize()}")
+            log.info(f"[drain_queue_to_ws] About to call q.get()")
+            log.info(f"[drain_queue_to_ws] WebSocket state: {websocket.application_state}")
+            
+            # Get an item from the queue
+            item = None
             try:
-                item = await asyncio.to_thread(q.get, True, poll_timeout_sec)
-                log.info(f"[drain_queue_to_ws] Retrieved item from queue: {type(item)}")
-            except queue.Empty:
-                log.info("[drain_queue_to_ws] Queue is empty, continuing...")
-                continue
+                # First try to get an item immediately if available
+                try:
+                    item = q.get_nowait()
+                    log.info(f"[drain_queue_to_ws] Retrieved item from queue (immediate): {type(item)}")
+                except asyncio.QueueEmpty:
+                    # Queue is empty, wait for an item with timeout
+                    log.info("[drain_queue_to_ws] Queue is empty, waiting for items...")
+                    item = await asyncio.wait_for(q.get(), timeout=poll_timeout_sec)
+                    log.info(f"[drain_queue_to_ws] Retrieved item from queue (after wait): {type(item)}")
             except asyncio.TimeoutError:
                 log.info("[drain_queue_to_ws] Timeout waiting for queue item, continuing...")
+                log.info(f"[drain_queue_to_ws] WebSocket state after timeout: {websocket.application_state}")
+                if websocket.application_state is not WebSocketState.CONNECTED:
+                    log.info("[drain_queue_to_ws] WebSocket disconnected during timeout, breaking loop")
+                    break
+                continue
+            
+            if item is None:
+                log.info("[drain_queue_to_ws] No item retrieved, continuing...")
+                # if websocket.application_state is not WebSocketState.CONNECTED:
+                if not ws_connected(websocket):
+                    log.info("[drain_queue_to_ws] WebSocket disconnected, breaking loop")
+                    break
+                await asyncio.sleep(0.1)
                 continue
             
             if drop_stale:
                 try:
                     while True:
                         q.get_nowait()  # Drop stale items, but keep the current item
-                except queue.Empty:
+                        log.info("[drain_queue_to_ws] Dropped stale item")
+                except asyncio.QueueEmpty:
+                    log.info("[drain_queue_to_ws] No more stale items to drop")
                     pass
             
             log.info(f"[drain_queue_to_ws] Sending item: {type(item)} - {str(item)[:100]}...")
             log.info(f"[drain_queue_to_ws] WebSocket state before send: {websocket.application_state}")
             ok = await safe_send(websocket, item, lock=send_lock)
             if not ok:
-                log.info("[drain_queue_to_ws] Failed to send item")
+                log.info("[drain_queue_to_ws] Failed to send item - breaking out of loop")
+                log.info(f"[drain_queue_to_ws] WebSocket state when send failed: {websocket.application_state}")
                 break
             else:
                 log.info("[drain_queue_to_ws] Successfully sent item to WebSocket")
                 log.info(f"[drain_queue_to_ws] WebSocket state after send: {websocket.application_state}")
-            #     consecutive_fails += 1
-            #     if not ws_connected(websocket):
-            #         break
-            #     await asyncio.sleep(0)
-            #     if consecutive_fails > 5:
-            #         consecutive_fails = 0
-            # else:
-            #     consecutive_fails = 0
-                # break
+            
+            # Check if WebSocket is still connected after processing
+            # if websocket.application_state is not WebSocketState.CONNECTED:
+            if not ws_connected(websocket):
+                log.info("[drain_queue_to_ws] WebSocket disconnected after processing item, breaking loop")
+                break
     # finally:
     #     with contextlib.suppress(Exception):
     #         await try_close(websocket,1000,"exception from drain_queue")
     # except asyncio.CancelledError:
     #     pass
     except Exception as e:
-        log.info("[drain_queue_to_ws] exception:",repr(e))
+        log.info(f"[drain_queue_to_ws] exception: {repr(e)}")
         traceback.print_exc()
         try:
+            log.info("[drain_queue_to_ws] closing websocket due to exception")
             await try_close(websocket,1000,"exception from drain_queue")
         except Exception:
+            log.info("[drain_queue_to_ws] failed to close websocket due to exception")
             pass
+    finally:
+        log.info(f"[drain_queue_to_ws] Exiting drain_queue_to_ws. WebSocket state: {websocket.application_state}, Queue size: {q.qsize()}")
             
 # this function is intended to receive the heartbeat from frontend(ws routes)
 async def ws_receiver(ws: WebSocket, send_lock: asyncio.Lock, ready_event: asyncio.Event, session: dict, kind: str):
@@ -361,7 +488,8 @@ async def ws_receiver(ws: WebSocket, send_lock: asyncio.Lock, ready_event: async
         # Don't automatically increment subscriber count - wait for subscribe message
         # session["subs"][kind]=session["subs"].get(kind,0)+1
         log.info(f"[ws_receiver] Started receiver for {kind}")
-        while ws.application_state is WebSocketState.CONNECTED:
+        # while ws.application_state is WebSocketState.CONNECTED:
+        while ws_connected(ws):
             try:
                 log.info(f"[ws_receiver] Waiting for message from {kind}")
                 data=await ws.receive_text()
@@ -424,6 +552,18 @@ async def ws_receiver(ws: WebSocket, send_lock: asyncio.Lock, ready_event: async
         else:
             log.info(f"[ws_receiver] Finally block: no decrement needed (no unsubscribe message received)")
 
+async def check_loop(websocket: WebSocket, session: dict, sender_task: asyncio.Task, receiver_task: asyncio.Task, send_lock: asyncio.Lock):
+    while True:
+        if( websocket.application_state is WebSocketState.CONNECTED
+            and session.get("training_thread") is not None
+            and session["training_thread"].is_alive()
+            and not session.get("stop_requested")):
+            sender_task.cancel()
+            receiver_task.cancel()
+            break
+        else:
+            await asyncio.sleep(0.1)
+
 log = logging.getLogger("uvicorn.error")
 # Unique marker for this build/process
 _MARK = hashlib.sha256(open(__file__, "rb").read()).hexdigest()[:12]
@@ -442,56 +582,116 @@ _dump_routes()
 #config: the input argument that holdes training settings(i.e. algorithms, episodes, etc.)
 @api.post("/training/start")
 async def start_training(config: TrainingConfig) -> TrainingResponse:
-    from Env.env_module import Environment
-    
-    # from DQN_test.your_dqn_file import DQN related Class
-    from DQN_test.DQN_module import Agent as DQNAgent, DQN_args_parser, writer as dqn_writer
-    # dqn_args,dqn_parser=DQN_args_parser()
-    dqn_parser = DQN_args_parser()
-    dqn_args = dqn_parser.parse_args([])
-
-    # from PPO_test.your_ppo_file import PPO related Class
-    from PPO_test.PPO_module import Agent as PPOAgent, PPO_args_parser, writer as ppo_writer
-    # ppo_args,ppo_parser=PPO_args_parser()
-    ppo_parser = PPO_args_parser()
-    ppo_args = ppo_parser.parse_args([])
-    
-    # hb_task = None
-    
     try:
+        log.info("[TRAINING START] Starting training initialization...")
+        log.info(f"[TRAINING START] Config: algorithm={config.algorithm}, environment={config.environment}")
+        
+        # Check resource limits before starting
+        import psutil
+        import os
+        process = psutil.Process(os.getpid())
+        current_memory = process.memory_info().rss / 1024 / 1024
+        
+        # Don't start new training if memory is already high
+        if current_memory > 2500:  # 2.5GB threshold
+            log.warning(f"[TRAINING START] Memory already high: {current_memory:.2f} MB, refusing to start training")
+            raise HTTPException(status_code=503, detail=f"Server memory usage too high ({current_memory:.2f} MB). Please wait and try again.")
+        
+        # Check if too many active sessions
+        if len(active_sessions) >= 3:  # Limit concurrent training sessions
+            log.warning(f"[TRAINING START] Too many active sessions: {len(active_sessions)}")
+            raise HTTPException(status_code=503, detail="Too many concurrent training sessions. Please wait for one to complete.")
+        
+        log.info("[TRAINING START] Importing Environment module...")
+        from Env.env_module import Environment
+        log.info("[TRAINING START] Environment module imported successfully")
+        
+        # from DQN_test.your_dqn_file import DQN related Class
+        log.info("[TRAINING START] Importing DQN module...")
+        from DQN_test.DQN_module import Agent as DQNAgent, DQN_args_parser, writer as dqn_writer
+        # dqn_args,dqn_parser=DQN_args_parser()
+        dqn_parser = DQN_args_parser()
+        dqn_args = dqn_parser.parse_args([])
+        log.info("[TRAINING START] DQN module imported successfully")
+
+        # from PPO_test.your_ppo_file import PPO related Class
+        log.info("[TRAINING START] Importing PPO module...")
+        from PPO_test.PPO_module import Agent as PPOAgent, PPO_args_parser, writer as ppo_writer
+        # ppo_args,ppo_parser=PPO_args_parser()
+        ppo_parser = PPO_args_parser()
+        ppo_args = ppo_parser.parse_args([])
+        log.info("[TRAINING START] PPO module imported successfully")
+        
+        # hb_task = None
         # Generate session ID
         session_id = f"session_{int(time.time())}"
         log.info(f"[TRAINING START] Created session: {session_id}")
         
         # Create environment based on config
+        log.info("[TRAINING START] Creating environment...")
         if config.environment == "warehouse":
             total_packages = config.warehouse_config.get("total_packages") if config.warehouse_config else 146
             if(layoutModified["status"]=="layout_modified"):
                 updated_layout=layoutModified["layout"]
-                print("Modifed Layout in Start Training!")
+                log.info("Modified Layout in Start Training!")
                 env = Environment(layout=updated_layout, done_standard=total_packages)
             else:#if the layout has not been modified
                 env = Environment(done_standard=total_packages)
         else:#navigation environment(just in case if there is another option)
             # For navigation environment, use default settings
             env = Environment(done_standard=146)  # we don't alter the goal right now
+        log.info("[TRAINING START] Environment created successfully")
         
         # Create agent based on algorithm
+        log.info(f"[TRAINING START] Creating {config.algorithm} agent...")
+        
+        # Monitor memory before agent creation
+        import psutil
+        import os
+        process = psutil.Process(os.getpid())
+        memory_before = process.memory_info().rss / 1024 / 1024
+        log.info(f"[TRAINING START] Memory before agent creation: {memory_before:.2f} MB")
+        
         if config.algorithm == "dqn":
             # Update DQN args with user config(only when there are really input from the users)
             if config.learning_rate:
                 dqn_args.learning_rate = config.learning_rate
             #if not, we just use the default value
+            log.info("[TRAINING START] Creating DQN agent...")
             agent = DQNAgent(dqn_args, env, dqn_writer, False, False,True)  # ThreeD=False for web
+            log.info("[TRAINING START] DQN agent created successfully")
         elif config.algorithm == "ppo":
             # Update PPO args with user config(if there really exist user input)
             if config.learning_rate:
                 ppo_args.actor_lr = config.learning_rate
                 ppo_args.critic_lr = config.learning_rate * 2
             #if not, we just use the default value from PPO module
+            log.info("[TRAINING START] Creating PPO agent...")
             agent = PPOAgent(ppo_args, env, ppo_writer, False,True)  # ThreeD=False for web
+            log.info("[TRAINING START] PPO agent created successfully")
         else:
             raise ValueError(f"Unknown algorithm: {config.algorithm}")
+        
+        # Monitor memory after agent creation
+        memory_after = process.memory_info().rss / 1024 / 1024
+        memory_increase = memory_after - memory_before
+        log.info(f"[TRAINING START] Memory after agent creation: {memory_after:.2f} MB (+{memory_increase:.2f} MB)")
+        
+        # Check if memory usage is too high (conservative threshold for 4GB container)
+        if memory_after > 2800:  # 2.8GB threshold (leave 1.2GB buffer)
+            log.warning(f"[TRAINING START] High memory usage detected: {memory_after:.2f} MB")
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Check memory after cleanup
+            memory_after_cleanup = process.memory_info().rss / 1024 / 1024
+            log.info(f"[TRAINING START] Memory after cleanup: {memory_after_cleanup:.2f} MB")
+            
+            # If still too high, warn about potential issues
+            if memory_after_cleanup > 3200:  # 3.2GB critical threshold
+                log.error(f"[TRAINING START] CRITICAL: Memory usage still too high: {memory_after_cleanup:.2f} MB")
+                log.error("[TRAINING START] Training may fail due to memory constraints")
         
         # Store session info
         active_sessions[session_id] = {
@@ -504,11 +704,11 @@ async def start_training(config: TrainingConfig) -> TrainingResponse:
             "progress": 0,
             "current_episode": 0,
             "training_thread": None,
-            "progress_q": queue.Queue(maxsize=1), #this manages the progress(make training push updates once and WS routes await fresh itmes)
-            "metrics2d": queue.Queue(maxsize=1), #this is the 2d metrics queue
-            "metrics3d": queue.Queue(maxsize=1), #this is the 3d metrics queue
-            "frame_q": queue.Queue(maxsize=1), #this is for plot streaming at the visualization time(2d)
-            "frame3d": queue.Queue(maxsize=1), #this is for plot streaming for 3d
+            "progress_q": asyncio.Queue(maxsize=1), #this manages the progress(make training push updates once and WS routes await fresh itmes)
+            "metrics2d": asyncio.Queue(maxsize=1), #this is the 2d metrics queue
+            "metrics3d": asyncio.Queue(maxsize=1), #this is the 3d metrics queue
+            "frame_q": asyncio.Queue(maxsize=1), #this is for plot streaming at the visualization time(2d)
+            "frame3d": asyncio.Queue(maxsize=1), #this is for plot streaming for 3d
             # "2d_subs": 0,
             # "3d_subs":0,
             "subs":{
@@ -566,7 +766,7 @@ async def stop_training(session_id: str):
         return {"success": True, "message":"No such session(already stopped)"}
     
     session = active_sessions[session_id]
-    stop_helper(session)
+    stop_helper(session, session_id)
     return {"success": True, "message": "Training stopped"}
 
 #this is intended for getting stop_status
@@ -786,7 +986,7 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
     log.info(f"[WS LAYOUT] Active sessions: {list(active_sessions.keys())}")
     log.info(f"[WS LAYOUT] Requested session: {session_id}")
     
-    await websocket.accept()
+    # await websocket.accept()
     
     if session_id not in active_sessions:
         log.info(f"[layout sessionid] no session id for layout route. Available sessions: {list(active_sessions.keys())}")
@@ -800,12 +1000,12 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
         return
     
     # previously we have the environment check and stop_flag check here[NECESSARY]
-    # await websocket.accept()
+    await websocket.accept()
     send_lock = asyncio.Lock()
 
     # env & session & stop_flag check
     session = active_sessions.get(session_id)
-    for _ in range(100):
+    for _ in range(60):
         session = active_sessions.get(session_id)
         if not session:
             break
@@ -849,7 +1049,8 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
     
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     try:
-        frame_q: "queue.Queue" = session.get("frame3d")
+        # previously use "queue.Queue"
+        frame_q: asyncio.Queue = session.get("frame3d")
         sender_task = asyncio.create_task(drain_queue_to_ws(websocket, send_lock, frame_q))
         
         try:
@@ -925,24 +1126,32 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
                 log.info(f"[Layout WS] Session subs: {session['subs']}")
                 # now we add this to our queue
                 if(session["subs"].get("3d_subs",0)>0):
-                    layout_3d = env.stream_layout()
-                    
-                    # Create a hash of the layout to detect changes
-                    import hashlib
-                    layout_str = str(layout_3d.get('layout', []))
-                    current_layout_hash = hashlib.md5(layout_str.encode()).hexdigest()
-                    
-                    # Only send if layout has changed
-                    if current_layout_hash != last_layout_hash:
-                        log.info(f"[Layout WS] Layout changed! Hash: {current_layout_hash[:8]}...")
-                        log.info(f"[Layout WS] Generated layout data: {type(layout_3d)} - {str(layout_3d)[:100]}...")
-                        # Send the layout data in the correct format expected by frontend
-                        success = put_drop(frame_q, layout_3d)
-                        log.info(f"[Layout WS] Layout queued successfully: {success}")
-                        log.info(f"[Layout WS] Frame queue size: {frame_q.qsize()}")
-                        last_layout_hash = current_layout_hash
-                    else:
-                        log.info(f"[Layout WS] Layout unchanged, skipping send. Hash: {current_layout_hash[:8]}...")
+                    try:
+                        layout_3d = env.stream_layout()
+                        
+                        # Create a hash of the layout to detect changes
+                        import hashlib
+                        layout_str = str(layout_3d.get('layout', []))
+                        current_layout_hash = hashlib.md5(layout_str.encode()).hexdigest()
+                        
+                        # Only send if layout has changed
+                        if current_layout_hash != last_layout_hash:
+                            log.info(f"[Layout WS] Layout changed! Hash: {current_layout_hash[:8]}...")
+                            log.info(f"[Layout WS] Generated layout data: {type(layout_3d)} - {str(layout_3d)[:100]}...")
+                            # Send the layout data in the correct format expected by frontend
+                            success = await put_drop(frame_q, layout_3d)
+                            log.info(f"[Layout WS] Layout queued successfully: {success}")
+                            log.info(f"[Layout WS] Frame queue size: {frame_q.qsize()}")
+                            last_layout_hash = current_layout_hash
+                            
+                            # Yield control to allow WebSocket tasks to process the queue
+                            await asyncio.sleep(0)
+                        else:
+                            log.info(f"[Layout WS] Layout unchanged, skipping send. Hash: {current_layout_hash[:8]}...")
+                    except Exception as layout_error:
+                        log.error(f"[Layout WS] Error in layout generation: {layout_error}")
+                        # Continue the loop even if layout generation fails
+                        await asyncio.sleep(0.5)
                 else:
                     log.info(f"[Layout WS] No 3d_subs subscribers: {session['subs'].get('3d_subs', 0)}")
                     # Adjust speed if needed
@@ -960,6 +1169,9 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
                 except:
                     print("Client disconnected during error handling")
                     break
+            
+            # WebSocket tasks are already running concurrently
+            
             await asyncio.sleep(0.5)
         
         # Log why the loop exited
@@ -998,7 +1210,7 @@ async def websocket_layout(websocket: WebSocket, session_id:str):
 @app.websocket("/ws/plot3d/{session_id}")
 async def metrics3d(websocket: WebSocket, session_id:str):
     print(f"[BACKEND] WebSocket layout route hit: session_id = {session_id}")
-    await websocket.accept()
+    # await websocket.accept()
 
     if session_id not in active_sessions:
         # this accept line is added later(just to test)
@@ -1015,7 +1227,7 @@ async def metrics3d(websocket: WebSocket, session_id:str):
         return
 
     # [NECESSARY]
-    # await websocket.accept()
+    await websocket.accept()
     
     # env & session & stop_flag check
 
@@ -1055,7 +1267,8 @@ async def metrics3d(websocket: WebSocket, session_id:str):
     
     await safe_send(websocket, {"type": "ready", "session_id": session_id}, lock=send_lock)
     try:
-        progress_q: "queue.Queue" = session.get("metrics3d")
+        # previously use "queue.Queue"
+        progress_q: asyncio.Queue = session.get("metrics3d")
         if progress_q is None:
             await try_close(websocket, 1011, "[WS] 3d metrics queue missing")
             return
@@ -1076,6 +1289,7 @@ async def metrics3d(websocket: WebSocket, session_id:str):
         # await env.stream_layout(websocket)
         while websocket.application_state is WebSocketState.CONNECTED and not env.done and not stop_flag():
             try:
+                log.info("[WS PLOT3D] Getting inside the loop")
                 # await asyncio.sleep(0.2)
                 progress=session["progress_log"]
                 delivered_package=env.count_delivered()
@@ -1086,21 +1300,31 @@ async def metrics3d(websocket: WebSocket, session_id:str):
                 # if not await safe_send(websocket,{"type":"render","stopped":stop_flag(),**active_sessions[session_id]["progress_log"],"number_delivered":delivered_package}, lock=send_lock):
                 #     break
                 if(session["subs"].get("3d_metrics_subs",0)>0):
-                    put_drop(progress_q,{"type":"render","stopped":stop_flag(),**active_sessions[session_id]["progress_log"],"number_delivered":delivered_package})
+                    await put_drop(progress_q,{"type":"render","stopped":stop_flag(),**active_sessions[session_id]["progress_log"],"number_delivered":delivered_package})
+                    log.info("[WS PLOT3D] metrics3d_q enqueued")
+                    
+                    # Yield control to allow WebSocket tasks to process the queue
+                    await asyncio.sleep(0)
                 else:
                     await asyncio.sleep(0.2)
             except WebSocketDisconnect:
+                log.info("[WS PLOT3D] Client disconnected")
                 print("Client disconnected")
                 break
             except Exception as e:
+                log.info("[WS PLOT3D] 3D Render/WEbSocket error:{e}")
                 print(f"3D Render/WEbSocket error:{e}")
                 try:
                     # await asyncio.sleep(0.01)
                     await safe_send(websocket,{"error": str(e)},lock=send_lock)
                     # await websocket.send_text(json.dumps({"error": str(e)}))
                 except:
+                    log.info("[WS PLOT3D] Client disconnected during error handling")
                     print("Client disconnected during error handling")
                     break
+            
+            # WebSocket tasks are already running concurrently
+            
             # 5 updates/sec, adjustable
             # await asyncio.sleep(0.2)
 
@@ -1108,6 +1332,7 @@ async def metrics3d(websocket: WebSocket, session_id:str):
         await try_close(websocket,1000,"3D metrics closed - it should be closed")
         return
     except Exception as e:
+        log.info("[WS PLOT3D] Unexpected error: {e}")
         print(f"Unexpected error: {e}")
         try:
             await asyncio.sleep(0.01)
@@ -1136,7 +1361,7 @@ async def metrics3d(websocket: WebSocket, session_id:str):
 @app.websocket("/ws/plot/{session_id}")
 async def metrics2d(websocket: WebSocket, session_id: str):
     print(f"[WebSocket] Connected for session {session_id}")
-    await websocket.accept()
+    # await websocket.accept()
 
     # hb_task = None
     if session_id not in active_sessions:
@@ -1151,7 +1376,7 @@ async def metrics2d(websocket: WebSocket, session_id: str):
         return
     
     # [NECESSARY]
-    # await websocket.accept()
+    await websocket.accept()
     send_lock = asyncio.Lock()
     
     session = active_sessions.get(session_id)
@@ -1189,7 +1414,8 @@ async def metrics2d(websocket: WebSocket, session_id: str):
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event, session,"2d_metrics_subs"))
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     try:
-        progress_q: "queue.Queue" = session.get("metrics2d")
+        # previously use "queue.Queue"
+        progress_q: asyncio.Queue = session.get("metrics2d")
         sender_task = asyncio.create_task(drain_queue_to_ws(websocket,send_lock,progress_q))
         
         try:
@@ -1224,7 +1450,10 @@ async def metrics2d(websocket: WebSocket, session_id: str):
                 #     break
                 
                 if(session["subs"].get("2d_metrics_subs",0)>0):
-                    put_drop(progress_q,{"type":"render","stopped":stop_flag(),**active_sessions[session_id]["progress_log"],"number_delivered":current_delivered})
+                    await put_drop(progress_q,{"type":"render","stopped":stop_flag(),**active_sessions[session_id]["progress_log"],"number_delivered":current_delivered})
+                    
+                    # Yield control to allow WebSocket tasks to process the queue
+                    await asyncio.sleep(0)
                 else:
                     await asyncio.sleep(0.2)
             except WebSocketDisconnect:
@@ -1238,6 +1467,8 @@ async def metrics2d(websocket: WebSocket, session_id: str):
                 except:
                     print("Client disconnected during error handling")
                     break
+            
+            # WebSocket tasks are already running concurrently
                     
             # 0.5 means half a second
             await asyncio.sleep(0.5)
@@ -1271,7 +1502,7 @@ async def metrics2d(websocket: WebSocket, session_id: str):
 @app.websocket("/ws/vis2d/{session_id}")
 async def websocket_plot_stream(websocket: WebSocket, session_id: str):
     print(f"[WebSocket] Connected for session {session_id}")
-    await websocket.accept()
+    # await websocket.accept()
 
     # hb_task = None
     if session_id not in active_sessions:
@@ -1290,7 +1521,7 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
         return
     
     # [NECESSARY]
-    # await websocket.accept()
+    await websocket.accept()
     
     session = active_sessions.get(session_id)
     # send_lock = get_ws_lock(session,"vis2d")
@@ -1328,7 +1559,8 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event, session, "2d_subs"))
     # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
     try:
-        frame_q: "queue.Queue" = session.get("frame_q")
+        # previously use "queue.Queue"
+        frame_q: asyncio.Queue = session.get("frame_q")
         if frame_q is None:
             await try_close(websocket,1011,"[WS] 2d visualization queue is missing")
             return
@@ -1399,8 +1631,11 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
                     if img_base64:
                         # currently tries to make the images load as fast as possible:
                         # sent=await safe_send(websocket,{"image_base64": img_base64},lock=send_lock)
-                        put_drop(frame_q, {"type":"render","image_base64":img_base64,"ts":time.time()})
+                        await put_drop(frame_q, {"type":"render","image_base64":img_base64,"ts":time.time()})
                         print(f"[WS plot] sent image len={len(img_base64) if img_base64 else 0}", flush=True)
+                        
+                        # Yield control to allow WebSocket tasks to process the queue
+                        await asyncio.sleep(0)
                 else:
                     await asyncio.sleep(0.2)
                 
@@ -1415,6 +1650,8 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
                 except:
                     print("Client disconnected during error handling")
                     break
+            
+            # WebSocket tasks are already running concurrently
                     
             # Send new frame every half second
             await asyncio.sleep(0.5)
@@ -1446,14 +1683,13 @@ async def websocket_plot_stream(websocket: WebSocket, session_id: str):
 @app.websocket("/ws/training/{session_id}") #note that in the routing, paths like "../training/" are just custom routing
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     print(f"WebSocket connection attempt for session_id={session_id}")
+    
+    # Accept the WebSocket connection first
     # await websocket.accept()
+    print(f"WebSocket connection accepted for session_id={session_id}")
 
     # hb_task = None
     if session_id not in active_sessions:
-        # await websocket.accept()
-        # await safe_send(websocket,{"error": "Session not found"},lock=asyncio.Lock())
-        # await websocket.send_json({"error": "Session not found"})
-        # await websocket.close(code=1008, reason="websocket training endpoint but no valid session_id")
         await try_close(websocket,1008,"websocket training endpoint but no valid session_id")
         return
     
@@ -1472,21 +1708,29 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     log.info("[WS TRAINING] Ready event created, about to create tasks")
     
     # heartbeat
-    progress_q: "queue.Queue" = session.get("progress_q")
+    # previously use "queue.Queue"
+    progress_q: asyncio.Queue = session.get("progress_q")
+    log.info(f"[WS TRAINING] progress_q reference: {progress_q}")
+    log.info(f"[WS TRAINING] progress_q id: {id(progress_q)}")
+    
     sender_task = asyncio.create_task(drain_queue_to_ws(websocket, send_lock, progress_q))
-    log.info("[WS TRAINING] Sender task created, creating ws_receiver task for training")
+    log.info("[WS TRAINING] Sender task (drain_queue_to_ws) created and started")
     receiver_task = asyncio.create_task(ws_receiver(websocket, send_lock, ready_event, session,"training"))
     log.info("[WS TRAINING] ws_receiver task created")
+    log.info(f"[WS TRAINING] Both tasks created - sender_task: {sender_task}, receiver_task: {receiver_task}")
     try:
-        # try:
-        #     await asyncio.wait_for(ready_event.wait(),timeout=8.0)
-        # except asyncio.TimeoutError:
-        #     print("[WS] the websocket endpoint did not receive anything")
-        #     # await try_close(websocket,1000,"timeout and not ready from the client")
-        #     # receiver_task.cancel()
-        #     # with contextlib.suppress(asyncio.CancelledError): await receiver_task
-        #     # return
-        #     await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
+        try:
+            log.info("[WS TRAINING] Waiting for ready event")
+            await asyncio.wait_for(ready_event.wait(),timeout=8.0)
+            log.info("[WS TRAINING] Ready event received")
+        except asyncio.TimeoutError:
+            print("[WS] the websocket endpoint did not receive anything")
+            log.info("[WS TRAINING] Timeout error when waiting for ready event")
+            # await try_close(websocket,1000,"timeout and not ready from the client")
+            # receiver_task.cancel()
+            # with contextlib.suppress(asyncio.CancelledError): await receiver_task
+            # return
+            await safe_send(websocket, {"type":"not ready"}, lock = send_lock)
         # except WebSocketDisconnect as e: #we would consider the disconnect case as well
         #     print(f"[TRAINING-WS] client disconnected before READY (code={e.code})")
         #     return
@@ -1504,6 +1748,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 session["status"] = "training"
                 
                 def progress_callback(update):#progress is the dictionary passed into the parameter field
+                    log.info("[Training success step] progress_callback called")
+                    print("[Training success step] progress_callback called")
                     #save this in the "session" so that we can use it in matplotlib
                     session["progress_log"]=update.copy()
                     
@@ -1519,7 +1765,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     #     event_loop
                     # )
                     try:
-                        put_drop(progress_q,{"type":current_status, **update})
+                        # await put_drop(progress_q,{"type":current_status, **update})
+                        asyncio.run_coroutine_threadsafe(
+                            put_drop(progress_q,{"type":current_status, **update}),
+                            event_loop
+                        )
+                        log.info("[Training success step] progress_q enqueued")
+                        log.info(f"[progress_callback] progress_q reference: {progress_q}")
+                        log.info(f"[progress_callback] progress_q id: {id(progress_q)}")
+                        
+                        print(f"[Training success step] progress_q enqueued {current_status} with {update}")
                     except Exception as e:
                         log.warning("[Training Start] progress_q enqueue failed: %s",e)
                 
@@ -1538,8 +1793,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
                 print("[DEBUG] run_training starting with episodes:", max_episodes)
                 print("[DEBUG] stop_flag initially set:", stop_flag)
+                
+                # Memory monitoring is already done above during agent creation
 
-                agent.train( max_episodes, progress_callback, stop_flag)
+                try:
+                    log.info("[TRAINING START] About to start agent.train()...")
+                    agent.train( max_episodes, progress_callback, stop_flag)
+                    log.info("[TRAINING START] agent.train() completed successfully")
+                except Exception as training_error:
+                    log.error(f"[TRAINING START] Error during agent.train(): {training_error}")
+                    raise training_error
                 
                 session["status"] = "completed"
                 asyncio.run_coroutine_threadsafe(
@@ -1566,10 +1829,21 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 print("[TRAINING] thread existing; status of this session is ",session.get("status"))
         
         # Start training thread
-        if session.get("training_thread") is None:
+        if session.get("training_thread") is None or not session["training_thread"].is_alive():
+            log.info("[TRAINING START] Creating and starting training thread...")
             training_thread = threading.Thread(target=run_training, daemon=True)
             session["training_thread"] = training_thread
             training_thread.start()
+            log.info(f"[TRAINING START] Training thread started: {training_thread.name}")
+            
+            # Wait a moment to ensure thread started
+            await asyncio.sleep(0.1)
+            if training_thread.is_alive():
+                log.info("[TRAINING START] Training thread confirmed alive")
+            else:
+                log.error("[TRAINING START] Training thread failed to start")
+        else:
+            log.warning("[TRAINING START] Training thread already exists and is alive")
         
         # hb_task = asyncio.create_task(heartbeat(websocket, interval=15.0))
         
@@ -1603,6 +1877,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 and not session.get("stop_requested")
             ):
                 await asyncio.sleep(0.25)
+        # try:
+        #     await asyncio.gather(
+        #         check_loop(websocket, session, sender_task, receiver_task, send_lock),
+        #         sender_task,
+        #         receiver_task,
+        #         return_exceptions=True
+        #     )
+        # except Exception as e:
+        #     log.info(f"[TRAINING-WS] error in check_loop: {e}")
+            # await websocket.send_text(json.dumps({"error": str(e)}))
     except Exception as e:
         await safe_send(websocket,{"error": str(e)},lock=send_lock)
         # await websocket.send_text(json.dumps({"error": str(e)}))
@@ -1612,7 +1896,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
         try:
             sender_task.cancel()
             receiver_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError): await receiver_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await receiver_task
+                await sender_task
         except Exception:
             pass
         
@@ -1627,8 +1913,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             "thread_alive": (session.get("training_thread").is_alive() if session.get("training_thread") else None),
             "stop_requested": session.get("stop_requested"),
             "status": session.get("status"),
+            "sender_task_done": sender_task.done() if 'sender_task' in locals() else "not_created",
+            "receiver_task_done": receiver_task.done() if 'receiver_task' in locals() else "not_created",
         }
+        log.info(f"[WS TRAINING] Exit snapshot: {exit_snapshot}")
         print(exit_snapshot)
+        
+        # Clean up session when WebSocket closes
+        if session_id in active_sessions:
+            log.info(f"[CLEANUP] WebSocket closing - removing session {session_id} from active_sessions")
+            del active_sessions[session_id]
+            log.info(f"[CLEANUP] Remaining active sessions: {len(active_sessions)}")
             
         # if(websocket.application_state==WebSocketState.CONNECTED):
         #     await websocket.close(code=1000, reason="normal close for websocket endpoint(the training process)")
@@ -1644,8 +1939,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 
 if __name__ == "__main__":
     print("Starting RL Project API server...")
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT", 8080))
     print("Your existing RL modules have been integrated!")
     print("Frontend should be available at: http://localhost:3000")
-    print("API server will be available at: http://localhost:8000")
+    print("API server will be available at: http://localhost:8080")
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -1,7 +1,7 @@
 // API configuration and utilities for connecting to Python backend
 // const API_BASE_URL_backend = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080"
-const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL ?? "wss://warehouse-rl-api.fly.dev"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "https://api.rl-navigation.com"
+const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL ?? "wss://api.rl-navigation.com"
 
 // to avoid hard coding for things before /api
 export const API =

@@ -10,7 +10,12 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Warehouse Agents Navigation",
   description: "Interactive demonstration of DQN and PPO algorithms in warehouse environments",
-    generator: 'v0.dev'
+  generator: 'v0.dev',
+  icons: {
+    icon: '/icon.png',
+    shortcut: '/icon.png',
+    apple: '/icon.png',
+  }
 }
 
 export default function RootLayout({

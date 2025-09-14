@@ -3,6 +3,7 @@
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
+#app = 'rl-navigation'
 app = 'warehouse-rl'
 primary_region = 'ewr'
 
@@ -27,8 +28,8 @@ primary_region = 'ewr'
 
 
 [build.args]
-  NEXT_PUBLIC_API_URL = "https://warehouse-rl-api.fly.dev"
-  NEXT_PUBLIC_WS_URL  = "wss://warehouse-rl-api.fly.dev"
+  NEXT_PUBLIC_API_URL = "https://api.rl-navigation.com"
+  NEXT_PUBLIC_WS_URL  = "wss://api.rl-navigation.com"
 
 
 [[vm]]

@@ -2,8 +2,8 @@
 
 // this file is intended for the comment page
 import { useEffect, useState } from "react";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080"
-// const NEXT_PUBLIC_WS_URL="wss://warehouse-rl-api.fly.dev"
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "https://api.rl-navigation.com"
+// const NEXT_PUBLIC_WS_URL="wss://api.rl-navigation.com"
 const NEXT_PUBLIC_WS_URL=process.env.NEXT_PUBLIC_WS_URL!
 
 export const dynamic = 'force-dynamic'; // disables static optimization

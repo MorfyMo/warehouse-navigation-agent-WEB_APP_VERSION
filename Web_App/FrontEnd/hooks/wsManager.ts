@@ -187,6 +187,7 @@ class WSManager {
 
             // send "ready" signal to backend
             try {
+                // in this get function we already sent the ready message to the backend
                 ws.send(JSON.stringify({type:"ready"}));
                 console.log("WS sent ready message", { url });
             } catch (e) {

@@ -1,4 +1,4 @@
-This RL uses DQN Agent to interact and learn from the environment.
+This RL uses DQN and PPO Agents to interact and learn from the environment.
 
 In this example we would try construct a warehouse Robot Navigation.
 1. There are a total of 146 number of packages expected to be carried to the receiving region from the shelves,
